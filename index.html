@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>bapo — chat rápido e sem histórico</title>
+<meta name="description" content="Converse em tempo real com outra pessoa. Nada é salvo." />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <button id="settings-fab" class="settings-fab" type="button" title="Aparência" aria-label="Configurações de aparência">⚙</button>
+
+  <div id="settings-panel" class="settings-panel hidden">
+    <p class="settings-title">Cor do tema</p>
+    <div id="color-swatches" class="swatch-row"></div>
+
+    <p class="settings-title">Modo</p>
+    <div id="theme-toggle" class="segmented">
+      <button type="button" data-theme-choice="light">Claro</button>
+      <button type="button" data-theme-choice="dark">Escuro</button>
+      <button type="button" data-theme-choice="system">Sistema</button>
+    </div>
+  </div>
+
+  <main class="app">
+
+    <!-- TELA 0: perfil -->
+    <section id="screen-profile" class="screen">
+      <header class="brand">
+        <h1>bapo</h1>
+        <p class="tagline">antes de começar, diga como quer aparecer.</p>
+      </header>
+
+      <div class="card">
+        <p class="card-title">Escolha um avatar</p>
+        <div id="avatar-grid" class="avatar-grid"></div>
+
+        <label for="profile-name" class="small-label profile-name-label">Seu nome</label>
+        <input id="profile-name" type="text" placeholder="Como quer ser chamado?" maxlength="20" />
+
+        <button id="btn-profile-continue" class="btn btn-primary profile-continue" type="button" disabled>Continuar</button>
+      </div>
+    </section>
+
+    <!-- TELA 1: configuração da sala -->
+    <section id="screen-setup" class="screen hidden">
+      <header class="brand">
+        <h1>bapo</h1>
+        <p class="tagline">chat direto, em tempo real, sem histórico.</p>
+      </header>
+
+      <div id="profile-chip" class="profile-chip">
+        <img id="chip-avatar" class="chip-avatar" alt="" />
+        <span id="chip-name" class="chip-name"></span>
+        <button id="btn-edit-profile" class="btn-link-small" type="button">editar</button>
+      </div>
+
+      <div id="setup-auto" class="card hidden">
+        <p class="card-title">Você recebeu um convite</p>
+        <p class="muted">Código da sala: <strong id="auto-code">------</strong></p>
+        <div id="auto-status" class="status">
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="auto-status-text">Conectando…</span>
+        </div>
+        <button id="btn-auto-retry" class="btn btn-primary hidden" type="button">Tentar novamente</button>
+        <button id="btn-auto-cancel" class="btn btn-link" type="button">Criar minha própria sala</button>
+      </div>
+
+      <div id="setup-options" class="options">
+        <div class="card">
+          <p class="card-title">Iniciar uma conversa</p>
+          <p class="muted">Crie uma sala e envie o link para a outra pessoa.</p>
+          <button id="btn-create" class="btn btn-primary" type="button">Criar sala</button>
+
+          <div id="share-box" class="share-box hidden">
+            <label for="share-link" class="small-label">Envie este link:</label>
+            <div class="copy-row">
+              <input id="share-link" type="text" readonly />
+              <button id="btn-copy" class="btn btn-secondary" type="button">Copiar</button>
+            </div>
+            <div class="status">
+              <span class="spinner" aria-hidden="true"></span>
+              <span id="host-status-text">Aguardando a outra pessoa entrar…</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"><span>ou</span></div>
+
+        <div class="card">
+          <p class="card-title">Entrar em uma conversa</p>
+          <p class="muted">Cole o código que você recebeu.</p>
+          <form id="join-form" class="join-row" autocomplete="off">
+            <input id="join-code" type="text" placeholder="Ex: A3F9K2" maxlength="6" />
+            <button id="btn-join" class="btn btn-primary" type="submit">Entrar</button>
+          </form>
+        </div>
+      </div>
+
+      <p id="setup-error" class="error hidden" role="alert"></p>
+    </section>
+
+    <!-- TELA 2: chat -->
+    <section id="screen-chat" class="screen hidden">
+      <header class="chat-header">
+        <div class="chat-header-info">
+          <div class="chat-avatar-wrap">
+            <img id="peer-avatar" class="chat-avatar hidden" alt="" />
+            <span id="peer-dot" class="dot dot-offline" aria-hidden="true"></span>
+          </div>
+          <div>
+            <p id="chat-peer-name" class="chat-title">bapo</p>
+            <p id="peer-status-text" class="muted small">conectando…</p>
+          </div>
+        </div>
+        <button id="btn-leave" class="btn btn-ghost" type="button" title="Sair da conversa">Sair</button>
+      </header>
+
+      <div id="messages" class="messages" role="log" aria-live="polite"></div>
+
+      <form id="message-form" class="message-form" autocomplete="off">
+        <input id="message-input" type="text" placeholder="Escreva uma mensagem…" maxlength="1000" disabled />
+        <button id="btn-send" class="btn btn-primary btn-send" type="submit" disabled>Enviar</button>
+      </form>
+    </section>
+
+  </main>
+
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
