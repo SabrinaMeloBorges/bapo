@@ -7,7 +7,7 @@ Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 - Cada pessoa escolhe um avatar (ou envia uma foto), um nome, e opcionalmente entra com e-mail/senha pra acessar os mesmos contatos em qualquer aparelho (sem conta, funciona só naquele navegador).
 - Pela barra lateral dá pra criar uma conversa individual, criar um grupo (com nome e ícone) ou entrar em uma já existente com um código de convite.
 - Várias conversas ficam abertas ao mesmo tempo na barra lateral — dá pra trocar entre elas sem perder nada.
-- **Mensagens são cifradas no navegador antes de ir pro servidor** (Web Crypto API — ECDH + AES-GCM em conversas individuais; AES-GCM com chave de grupo protegida pelas regras do Firestore em grupos). O Firestore só armazena texto cifrado.
+- **Mensagens são cifradas no navegador antes de ir pro servidor** (Web Crypto API, AES-256-GCM). O Firestore só armazena texto cifrado.
 - Confirmação de leitura (✓✓, fica azul quando a outra pessoa lê, com horário) e status de presença (online agora / inativo / em hibernação) em conversas individuais.
 - Botão "Limpar chat" e limpeza automática de mensagens com mais de 30 minutos.
 - Instalável como app (PWA) — funciona com ícone na tela inicial e abre em janela própria.
@@ -15,8 +15,9 @@ Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 
 ### Sobre a criptografia — o que ela cobre e o que não cobre
 
-- **Conversas individuais**: cada aparelho gera seu próprio par de chaves; a chave privada nunca sai do navegador. Isso é E2EE de verdade para aquele par de aparelhos. Limitação: se você trocar de aparelho (ou entrar com a mesma conta em outro navegador), esse aparelho novo tem uma chave diferente — as mensagens antigas trocadas nos aparelhos antigos não abrem nele, e a conversa "recomeça a chave" a partir do próximo aparelho usado.
-- **Grupos**: a chave é única por grupo, armazenada no documento do chat — protegida pelas regras do Firestore (só quem já é membro consegue lê-la), mas não é uma chave individual "embrulhada" pra cada pessoa como fariam apps de mensagens totalmente ponta-a-ponta. Na prática: protege contra vazamento do banco de dados ou acesso indevido de quem não é do grupo, mas qualquer membro do grupo pode, em tese, ler tudo (o que já seria verdade de qualquer forma).
+Toda conversa (individual ou em grupo) tem uma chave AES-256 própria, gerada na criação e guardada no documento do chat no Firestore. Quem protege essa chave são as regras de segurança do banco — só quem já é membro daquela conversa consegue ler o documento (e portanto a chave). Isso significa que a mesma conversa abre normalmente em qualquer aparelho onde você estiver logado, como em outros apps de mensagens — não existe uma chave "por aparelho" que trave a leitura ao trocar de dispositivo.
+
+Isso protege contra: vazamento do banco de dados, acesso indevido de quem nunca fez parte da conversa, alguém bisbilhotando o Firestore diretamente. Não é o mesmo nível de uma criptografia ponta-a-ponta "com chave embrulhada por pessoa" como fariam apps de mensagens dedicados — qualquer membro de uma conversa sempre teve acesso a ela de qualquer forma, então isso não muda o modelo de confiança dentro do próprio grupo/conversa.
 
 ## Rodar localmente
 

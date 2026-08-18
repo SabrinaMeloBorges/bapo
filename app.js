@@ -127,16 +127,14 @@ function randomCode(length = 6) {
 
 // ---------- criptografia (Web Crypto API, nativa do navegador) ----------
 //
-// Conversas individuais: cada aparelho tem seu próprio par de chaves ECDH
-// (P-256). A chave privada nunca sai do navegador. As duas pessoas calculam,
-// cada uma do seu lado, o mesmo segredo compartilhado (Diffie-Hellman) e
-// usam isso pra cifrar/decifrar com AES-GCM. O servidor (Firestore) só vê o
-// texto cifrado.
-// Grupos: um "combinado de código" não dá pra fazer Diffie-Hellman par-a-par
-// com todo mundo de forma simples, então o grupo tem uma chave AES única,
-// guardada no próprio documento do chat — protegida pelas regras do Firestore
-// (só quem já é membro consegue ler o documento), mas não é uma chave
-// "embrulhada" pra cada pessoa como fariam apps de ponta-a-ponta completos.
+// Cada conversa (individual ou em grupo) tem uma chave AES-256 própria,
+// gerada na criação e guardada no documento do chat. Quem protege essa
+// chave são as regras do Firestore (só quem já é membro consegue ler o
+// documento) — não o sigilo por trás de matemática de par de chaves por
+// aparelho. A vantagem: a mesma conversa abre normalmente em qualquer
+// aparelho onde você estiver logado, como em outros apps de mensagens,
+// sem precisar que os dois lados "sincronizem" uma chave por par de
+// dispositivos primeiro.
 
 function bufToB64(buf) {
   const bytes = new Uint8Array(buf);
@@ -152,40 +150,7 @@ function b64ToBuf(b64) {
   return bytes.buffer;
 }
 
-let myKeyPair = null;
-
-async function ensureKeyPair() {
-  if (myKeyPair) return myKeyPair;
-  let stored = null;
-  try {
-    stored = JSON.parse(localStorage.getItem("bapo-keypair") || "null");
-  } catch (e) {}
-
-  if (stored) {
-    try {
-      const publicKey = await crypto.subtle.importKey("jwk", stored.publicKeyJwk, { name: "ECDH", namedCurve: "P-256" }, true, []);
-      const privateKey = await crypto.subtle.importKey("jwk", stored.privateKeyJwk, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey", "deriveBits"]);
-      myKeyPair = { publicKey, privateKey, publicKeyJwk: stored.publicKeyJwk };
-      return myKeyPair;
-    } catch (e) {}
-  }
-
-  const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey", "deriveBits"]);
-  const publicKeyJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
-  const privateKeyJwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
-  try {
-    localStorage.setItem("bapo-keypair", JSON.stringify({ publicKeyJwk, privateKeyJwk }));
-  } catch (e) {}
-  myKeyPair = { publicKey: pair.publicKey, privateKey: pair.privateKey, publicKeyJwk };
-  return myKeyPair;
-}
-
-async function deriveSharedKey(otherPublicKeyJwk) {
-  const otherKey = await crypto.subtle.importKey("jwk", otherPublicKeyJwk, { name: "ECDH", namedCurve: "P-256" }, true, []);
-  return crypto.subtle.deriveKey({ name: "ECDH", public: otherKey }, myKeyPair.privateKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-
-async function generateGroupKeyRaw() {
+async function generateSharedKeyRaw() {
   const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
   const raw = await crypto.subtle.exportKey("raw", key);
   return bufToB64(raw);
@@ -198,16 +163,15 @@ async function getChatKey(chat) {
   const cached = chatKeyCache.get(chat.id);
   if (cached) return cached;
   try {
-    let key = null;
-    if (chat.type === "group") {
-      if (!chat.encKeyRaw) return null;
-      key = await crypto.subtle.importKey("raw", b64ToBuf(chat.encKeyRaw), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-    } else {
-      const otherUid = (chat.memberIds || []).find((id) => id !== myUid);
-      const other = otherUid && chat.memberProfiles ? chat.memberProfiles[otherUid] : null;
-      if (!other || !other.publicKeyJwk) return null;
-      key = await deriveSharedKey(other.publicKeyJwk);
+    let raw = chat.encKeyRaw;
+    if (!raw) {
+      // conversa individual criada antes desta atualização (usava uma chave
+      // por par de aparelhos): gera a chave compartilhada agora, pra essa
+      // conversa passar a abrir normalmente em qualquer aparelho a partir daqui.
+      raw = await generateSharedKeyRaw();
+      await updateDoc(doc(db, "chats", chat.id), { encKeyRaw: raw });
     }
+    const key = await crypto.subtle.importKey("raw", b64ToBuf(raw), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
     chatKeyCache.set(chat.id, key);
     return key;
   } catch (e) {
@@ -240,21 +204,7 @@ async function decryptPreview(chat, lastMessage) {
 }
 
 function myMemberProfile() {
-  return { name: myProfile.name, avatar: myProfile.avatar, publicKeyJwk: myKeyPair.publicKeyJwk };
-}
-
-function samePublicKey(a, b) {
-  return !!a && !!b && a.x === b.x && a.y === b.y;
-}
-
-async function refreshMyPublicKeyIfNeeded(chat) {
-  if (!chat || chat.type !== "direct") return;
-  const mine = chat.memberProfiles && chat.memberProfiles[myUid];
-  if (samePublicKey(mine && mine.publicKeyJwk, myKeyPair.publicKeyJwk)) return;
-  try {
-    await updateDoc(doc(db, "chats", chat.id), { [`memberProfiles.${myUid}`]: myMemberProfile() });
-    chatKeyCache.delete(chat.id);
-  } catch (e) {}
+  return { name: myProfile.name, avatar: myProfile.avatar };
 }
 
 // ---------- elementos ----------
@@ -305,8 +255,6 @@ const btnClearChat = el("btn-clear-chat");
 const btnLeave = el("btn-leave");
 const inviteBanner = el("invite-banner");
 const inviteBannerCode = el("invite-banner-code");
-const keyPendingBanner = el("key-pending-banner");
-const keyPendingText = el("key-pending-text");
 const btnInviteBannerCopy = el("btn-invite-banner-copy");
 
 const messagesEl = el("messages");
@@ -765,7 +713,6 @@ btnEditProfile.addEventListener("click", () => {
 // ---------- app principal ----------
 
 async function boot() {
-  await ensureKeyPair();
   const profile = await loadProfile();
 
   const params = new URLSearchParams(window.location.search);
@@ -941,7 +888,6 @@ function openChat(chatId) {
   btnSend.disabled = false;
   const chat = chats.get(chatId);
   updateActiveChatHeader(chat);
-  refreshMyPublicKeyIfNeeded(chat);
   subscribeToMessages(chatId);
   markChatAsRead(chatId, chat);
   renderChatList();
@@ -1006,18 +952,8 @@ function updateActiveChatHeader(chat) {
   const waitingForPeer = memberCount < 2;
   inviteBanner.classList.toggle("hidden", !waitingForPeer);
   if (waitingForPeer) inviteBannerCode.textContent = chat.inviteCode;
-
-  const otherProfile = info.otherUid && chat.memberProfiles ? chat.memberProfiles[info.otherUid] : null;
-  const waitingForKey = chat.type === "direct" && !waitingForPeer && (!otherProfile || !otherProfile.publicKeyJwk);
-  keyPendingBanner.classList.toggle("hidden", !waitingForKey);
-  if (waitingForKey) {
-    keyPendingText.textContent = `Essa conversa é de antes da criptografia. Peça pra ${otherProfile ? otherProfile.name : "a outra pessoa"} abrir essa conversa uma vez pra continuar.`;
-    messageInput.disabled = true;
-    btnSend.disabled = true;
-  } else if (!waitingForPeer) {
-    messageInput.disabled = false;
-    btnSend.disabled = false;
-  }
+  messageInput.disabled = waitingForPeer;
+  btnSend.disabled = waitingForPeer;
 
   subscribePeerPresence(chat, info.otherUid);
   renderPeerPresence();
@@ -1027,13 +963,14 @@ function updateActiveChatHeader(chat) {
 
 async function createDirectChat() {
   await authReady;
-  await ensureKeyPair();
   const code = randomCode();
+  const encKeyRaw = await generateSharedKeyRaw();
   const chatRef = await addDoc(collection(db, "chats"), {
     type: "direct",
     name: "",
     icon: null,
     inviteCode: code,
+    encKeyRaw,
     memberIds: [myUid],
     memberProfiles: { [myUid]: myMemberProfile() },
     createdAt: Date.now(),
@@ -1045,9 +982,8 @@ async function createDirectChat() {
 
 async function createGroupChat(name, icon) {
   await authReady;
-  await ensureKeyPair();
   const code = randomCode();
-  const encKeyRaw = await generateGroupKeyRaw();
+  const encKeyRaw = await generateSharedKeyRaw();
   const chatRef = await addDoc(collection(db, "chats"), {
     type: "group",
     name,
@@ -1065,7 +1001,6 @@ async function createGroupChat(name, icon) {
 
 async function handleJoinByCode(rawCode, opts = {}) {
   await authReady;
-  await ensureKeyPair();
   const code = rawCode.trim().toUpperCase();
   if (!code) return;
 
