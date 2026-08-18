@@ -541,6 +541,46 @@ input[type="text"]:focus {
   flex-shrink: 0;
 }
 
+.chat-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.chat-menu {
+  position: absolute;
+  top: 44px;
+  right: 0;
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-menu-item {
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.chat-menu-item:hover {
+  background: var(--bg);
+}
+
+.chat-menu-item.danger {
+  color: var(--danger);
+}
+
 .invite-banner {
   display: flex;
   align-items: center;
@@ -622,6 +662,14 @@ input[type="text"]:focus {
 
 .message-form input {
   flex: 1;
+}
+
+.lock-icon {
+  display: flex;
+  align-items: center;
+  font-size: 0.95rem;
+  opacity: 0.6;
+  flex-shrink: 0;
 }
 
 .btn-send {
@@ -883,6 +931,54 @@ input[type="text"]:focus {
 .segmented button.active {
   background: var(--primary);
   color: var(--primary-fg);
+}
+
+.settings-logout {
+  display: block;
+  width: 100%;
+  text-align: center;
+  margin-top: 16px;
+  color: var(--danger);
+}
+
+.settings-link-google {
+  margin-top: 16px;
+  font-size: 0.82rem;
+}
+
+.participants-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.participant-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.participant-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--border);
+  object-fit: cover;
+}
+
+.participant-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.participant-you {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.82rem;
 }
 
 /* --- modal: nova conversa / grupo / entrar com código --- */

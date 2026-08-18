@@ -1,28 +1,43 @@
 rules_version = '2';
 
-// Modelo de segurança simples, no mesmo espírito do resto do app: quem tem o
-// código/link do chat consegue entrar (não há contas com senha). Qualquer
-// usuário autenticado (inclusive anônimo) pode ler/criar/atualizar chats e
-// mensagens, mas só pode enviar mensagens em nome de si mesmo. Update/delete
-// de mensagens agora é permitido (confirmação de leitura, limpar chat e a
-// limpeza automática por tempo precisam disso).
+// Modelo de segurança: o convite (código) é público — qualquer autenticado
+// pode procurá-lo pra achar o chatId e entrar. Já o chat em si (mensagens,
+// chave de criptografia do grupo, lista de membros) só pode ser lido por
+// quem já é membro. Continua sem contas com senha obrigatórias — quem tem
+// o código consegue se auto-adicionar como membro.
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /invites/{code} {
+      allow read, create: if request.auth != null;
+      allow update, delete: if false;
+    }
+
     match /chats/{chatId} {
-      allow read, create, update: if request.auth != null;
+      allow read: if request.auth != null && request.auth.uid in resource.data.memberIds;
+      allow create: if request.auth != null && request.auth.uid in request.resource.data.memberIds;
+      allow update: if request.auth != null;
       allow delete: if false;
 
       match /messages/{messageId} {
-        allow read: if request.auth != null;
+        allow read: if request.auth != null
+                     && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.memberIds;
         allow create: if request.auth != null
+                       && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.memberIds
                        && request.resource.data.senderId == request.auth.uid;
-        allow update: if request.auth != null;
-        allow delete: if request.auth != null;
+        allow update: if request.auth != null
+                       && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.memberIds;
+        allow delete: if request.auth != null
+                       && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.memberIds;
       }
     }
 
-    // Presença (online / inativo / em hibernação): cada pessoa só escreve o
-    // próprio status, mas qualquer um autenticado pode ler o de quem quiser.
+    // Perfil sincronizado entre aparelhos (só usado por quem entra com e-mail).
+    match /users/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Presença (online / inativo / em hibernação).
     match /presence/{uid} {
       allow read: if request.auth != null;
       allow write: if request.auth != null && request.auth.uid == uid;

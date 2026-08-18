@@ -1,14 +1,22 @@
 # bapo
 
-Chat em tempo real com conversas individuais e grupos, com histórico salvo.
+Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 
 ## Como funciona
 
-- Cada pessoa escolhe um avatar e um nome antes de começar (fica salvo só no aparelho dela).
+- Cada pessoa escolhe um avatar (ou envia uma foto), um nome, e opcionalmente entra com e-mail/senha pra acessar os mesmos contatos em qualquer aparelho (sem conta, funciona só naquele navegador).
 - Pela barra lateral dá pra criar uma conversa individual, criar um grupo (com nome e ícone) ou entrar em uma já existente com um código de convite.
 - Várias conversas ficam abertas ao mesmo tempo na barra lateral — dá pra trocar entre elas sem perder nada.
-- Mensagens e conversas são salvas em tempo real no [Firebase](https://firebase.google.com/) (Firestore + Authentication anônima) e sincronizam entre qualquer aparelho.
+- **Mensagens são cifradas no navegador antes de ir pro servidor** (Web Crypto API — ECDH + AES-GCM em conversas individuais; AES-GCM com chave de grupo protegida pelas regras do Firestore em grupos). O Firestore só armazena texto cifrado.
+- Confirmação de leitura (✓✓, fica azul quando a outra pessoa lê, com horário) e status de presença (online agora / inativo / em hibernação) em conversas individuais.
+- Botão "Limpar chat" e limpeza automática de mensagens com mais de 30 minutos.
+- Instalável como app (PWA) — funciona com ícone na tela inicial e abre em janela própria.
 - Cor do tema e modo claro/escuro/sistema são configuráveis pelo ícone de engrenagem.
+
+### Sobre a criptografia — o que ela cobre e o que não cobre
+
+- **Conversas individuais**: cada aparelho gera seu próprio par de chaves; a chave privada nunca sai do navegador. Isso é E2EE de verdade para aquele par de aparelhos. Limitação: se você trocar de aparelho (ou entrar com a mesma conta em outro navegador), esse aparelho novo tem uma chave diferente — as mensagens antigas trocadas nos aparelhos antigos não abrem nele, e a conversa "recomeça a chave" a partir do próximo aparelho usado.
+- **Grupos**: a chave é única por grupo, armazenada no documento do chat — protegida pelas regras do Firestore (só quem já é membro consegue lê-la), mas não é uma chave individual "embrulhada" pra cada pessoa como fariam apps de mensagens totalmente ponta-a-ponta. Na prática: protege contra vazamento do banco de dados ou acesso indevido de quem não é do grupo, mas qualquer membro do grupo pode, em tese, ler tudo (o que já seria verdade de qualquer forma).
 
 ## Rodar localmente
 
@@ -38,7 +46,7 @@ Não há build — é só HTML, CSS e JS puro (o Firebase é carregado via CDN c
 
 1. Crie um projeto grátis em [console.firebase.google.com](https://console.firebase.google.com).
 2. Ative **Firestore Database** (Build → Firestore Database → Criar banco de dados).
-3. Ative o login anônimo (Build → Authentication → Get started → Sign-in method → Anonymous).
+3. Ative os métodos de login (Build → Authentication → Get started → Sign-in method): **Anonymous** e **Email/Password**.
 4. Em Configurações do projeto → Geral → Seus apps, registre um app Web e copie o `firebaseConfig`.
 5. Cole esses valores em `PRODUCTION_CONFIG`, no arquivo `firebase-config.js`.
 6. Em Firestore Database → Regras, cole o conteúdo do arquivo `firestore.rules` deste projeto e publique.

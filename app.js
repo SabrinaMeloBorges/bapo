@@ -2,6 +2,12 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/fireba
 import {
   getAuth,
   signInAnonymously,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInWithPopup,
+  linkWithPopup,
+  GoogleAuthProvider,
+  signOut,
   onAuthStateChanged,
   connectAuthEmulator,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
@@ -12,6 +18,7 @@ import {
   doc,
   addDoc,
   setDoc,
+  getDoc,
   updateDoc,
   getDocs,
   query,
@@ -45,8 +52,11 @@ const COLOR_THEMES = {
   amber: { label: "Âmbar", light: ["#b45309", "#92400e"], dark: ["#d97706", "#f59e0b"] },
 };
 
-// STUN/TURN não é mais necessário: o transporte agora é o Firestore (com
-// persistência real), não mais conexão direta WebRTC entre navegadores.
+const PRESENCE_HEARTBEAT_MS = 20000;
+const PRESENCE_ONLINE_WINDOW_MS = 35000;
+const PRESENCE_INACTIVE_WINDOW_MS = 5 * 60000;
+const MESSAGE_TTL_MS = 30 * 60000;
+const PURGE_CHECK_INTERVAL_MS = 5 * 60000;
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -56,6 +66,12 @@ if (USE_EMULATOR) {
   connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
   connectFirestoreEmulator(db, "127.0.0.1", 8080);
   console.info("[bapo] usando emuladores locais do Firebase");
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
 }
 
 const el = (id) => document.getElementById(id);
@@ -96,12 +112,6 @@ function resizeImageFile(file, size = 128, quality = 0.72) {
   });
 }
 
-const PRESENCE_HEARTBEAT_MS = 20000;
-const PRESENCE_ONLINE_WINDOW_MS = 35000;
-const PRESENCE_INACTIVE_WINDOW_MS = 5 * 60000;
-const MESSAGE_TTL_MS = 30 * 60000;
-const PURGE_CHECK_INTERVAL_MS = 5 * 60000;
-
 function randomCode(length = 6) {
   let code = "";
   for (let i = 0; i < length; i++) {
@@ -110,7 +120,150 @@ function randomCode(length = 6) {
   return code;
 }
 
+// ---------- criptografia (Web Crypto API, nativa do navegador) ----------
+//
+// Conversas individuais: cada aparelho tem seu próprio par de chaves ECDH
+// (P-256). A chave privada nunca sai do navegador. As duas pessoas calculam,
+// cada uma do seu lado, o mesmo segredo compartilhado (Diffie-Hellman) e
+// usam isso pra cifrar/decifrar com AES-GCM. O servidor (Firestore) só vê o
+// texto cifrado.
+// Grupos: um "combinado de código" não dá pra fazer Diffie-Hellman par-a-par
+// com todo mundo de forma simples, então o grupo tem uma chave AES única,
+// guardada no próprio documento do chat — protegida pelas regras do Firestore
+// (só quem já é membro consegue ler o documento), mas não é uma chave
+// "embrulhada" pra cada pessoa como fariam apps de ponta-a-ponta completos.
+
+function bufToB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function b64ToBuf(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+let myKeyPair = null;
+
+async function ensureKeyPair() {
+  if (myKeyPair) return myKeyPair;
+  let stored = null;
+  try {
+    stored = JSON.parse(localStorage.getItem("bapo-keypair") || "null");
+  } catch (e) {}
+
+  if (stored) {
+    try {
+      const publicKey = await crypto.subtle.importKey("jwk", stored.publicKeyJwk, { name: "ECDH", namedCurve: "P-256" }, true, []);
+      const privateKey = await crypto.subtle.importKey("jwk", stored.privateKeyJwk, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey", "deriveBits"]);
+      myKeyPair = { publicKey, privateKey, publicKeyJwk: stored.publicKeyJwk };
+      return myKeyPair;
+    } catch (e) {}
+  }
+
+  const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey", "deriveBits"]);
+  const publicKeyJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  const privateKeyJwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+  try {
+    localStorage.setItem("bapo-keypair", JSON.stringify({ publicKeyJwk, privateKeyJwk }));
+  } catch (e) {}
+  myKeyPair = { publicKey: pair.publicKey, privateKey: pair.privateKey, publicKeyJwk };
+  return myKeyPair;
+}
+
+async function deriveSharedKey(otherPublicKeyJwk) {
+  const otherKey = await crypto.subtle.importKey("jwk", otherPublicKeyJwk, { name: "ECDH", namedCurve: "P-256" }, true, []);
+  return crypto.subtle.deriveKey({ name: "ECDH", public: otherKey }, myKeyPair.privateKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+async function generateGroupKeyRaw() {
+  const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  const raw = await crypto.subtle.exportKey("raw", key);
+  return bufToB64(raw);
+}
+
+const chatKeyCache = new Map();
+
+async function getChatKey(chat) {
+  if (!chat) return null;
+  const cached = chatKeyCache.get(chat.id);
+  if (cached) return cached;
+  try {
+    let key = null;
+    if (chat.type === "group") {
+      if (!chat.encKeyRaw) return null;
+      key = await crypto.subtle.importKey("raw", b64ToBuf(chat.encKeyRaw), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+    } else {
+      const otherUid = (chat.memberIds || []).find((id) => id !== myUid);
+      const other = otherUid && chat.memberProfiles ? chat.memberProfiles[otherUid] : null;
+      if (!other || !other.publicKeyJwk) return null;
+      key = await deriveSharedKey(other.publicKeyJwk);
+    }
+    chatKeyCache.set(chat.id, key);
+    return key;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function encryptText(key, text) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const buf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(text));
+  return { ciphertext: bufToB64(buf), iv: bufToB64(iv) };
+}
+
+async function decryptText(key, ciphertext, iv) {
+  const buf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(b64ToBuf(iv)) }, key, b64ToBuf(ciphertext));
+  return new TextDecoder().decode(buf);
+}
+
+async function decryptPreview(chat, lastMessage) {
+  if (!lastMessage) return "Nenhuma mensagem ainda";
+  const prefix = lastMessage.senderName ? lastMessage.senderName + ": " : "";
+  const key = await getChatKey(chat);
+  if (!key) return prefix + "🔒";
+  try {
+    const text = await decryptText(key, lastMessage.ciphertext, lastMessage.iv);
+    return prefix + text;
+  } catch (e) {
+    return prefix + "🔒";
+  }
+}
+
+function myMemberProfile() {
+  return { name: myProfile.name, avatar: myProfile.avatar, publicKeyJwk: myKeyPair.publicKeyJwk };
+}
+
+function samePublicKey(a, b) {
+  return !!a && !!b && a.x === b.x && a.y === b.y;
+}
+
+async function refreshMyPublicKeyIfNeeded(chat) {
+  if (!chat || chat.type !== "direct") return;
+  const mine = chat.memberProfiles && chat.memberProfiles[myUid];
+  if (samePublicKey(mine && mine.publicKeyJwk, myKeyPair.publicKeyJwk)) return;
+  try {
+    await updateDoc(doc(db, "chats", chat.id), { [`memberProfiles.${myUid}`]: myMemberProfile() });
+    chatKeyCache.delete(chat.id);
+  } catch (e) {}
+}
+
 // ---------- elementos ----------
+
+const screenAuth = el("screen-auth");
+const authEmailInput = el("auth-email");
+const authPasswordInput = el("auth-password");
+const btnAuthLogin = el("btn-auth-login");
+const btnAuthSignup = el("btn-auth-signup");
+const btnAuthGoogle = el("btn-auth-google");
+const btnAuthAnon = el("btn-auth-anon");
+const authError = el("auth-error");
+const btnLogout = el("btn-logout");
+const btnLinkGoogle = el("btn-link-google");
 
 const screenProfile = el("screen-profile");
 const screenApp = el("screen-app");
@@ -121,12 +274,10 @@ const avatarFileInput = el("avatar-file-input");
 const profileNameInput = el("profile-name");
 const btnProfileContinue = el("btn-profile-continue");
 
-const profileChip = el("profile-chip");
 const chipAvatar = el("chip-avatar");
 const chipName = el("chip-name");
 const btnEditProfile = el("btn-edit-profile");
 
-const sidebar = el("sidebar");
 const chatListEl = el("chat-list");
 const chatListEmpty = el("chat-list-empty");
 const btnNewChat = el("btn-new-chat");
@@ -137,6 +288,12 @@ const btnBackSidebar = el("btn-back-sidebar");
 const chatAvatarImg = el("chat-avatar");
 const chatTitleEl = el("chat-title");
 const chatSubtitleEl = el("chat-subtitle");
+const btnChatMenu = el("btn-chat-menu");
+const chatMenu = el("chat-menu");
+const btnParticipants = el("btn-participants");
+const participantsModal = el("participants-modal");
+const participantsList = el("participants-list");
+const btnCloseParticipants = el("btn-close-participants");
 const btnChatInvite = el("btn-chat-invite");
 const btnClearChat = el("btn-clear-chat");
 const btnLeave = el("btn-leave");
@@ -206,27 +363,125 @@ function showAppError(msg) {
   setTimeout(() => appError.classList.add("hidden"), 6000);
 }
 
-// ---------- autenticação (anônima, sem senha) ----------
+// ---------- autenticação (e-mail ou anônima) ----------
 
 let authReadyResolve;
 const authReady = new Promise((resolve) => {
   authReadyResolve = resolve;
 });
 
+function describeAuthError(err) {
+  const map = {
+    "auth/invalid-email": "E-mail inválido.",
+    "auth/missing-password": "Digite uma senha.",
+    "auth/weak-password": "A senha precisa ter pelo menos 6 caracteres.",
+    "auth/email-already-in-use": "Já existe uma conta com esse e-mail. Tente entrar.",
+    "auth/invalid-credential": "E-mail ou senha incorretos.",
+    "auth/wrong-password": "E-mail ou senha incorretos.",
+    "auth/user-not-found": "Não existe conta com esse e-mail.",
+    "auth/too-many-requests": "Muitas tentativas. Espere um pouco e tente de novo.",
+    "auth/unauthorized-domain": "Este site ainda não está autorizado no Firebase (Authentication → Settings → Authorized domains).",
+    "auth/popup-blocked": "O navegador bloqueou o pop-up de login. Permita pop-ups e tente de novo.",
+  };
+  return map[err.code] || err.message;
+}
+
+function showAuthError(msg) {
+  authError.textContent = msg;
+  authError.classList.remove("hidden");
+}
+
+btnAuthLogin.addEventListener("click", async () => {
+  authError.classList.add("hidden");
+  try {
+    await signInWithEmailAndPassword(auth, authEmailInput.value.trim(), authPasswordInput.value);
+  } catch (err) {
+    showAuthError(describeAuthError(err));
+  }
+});
+
+btnAuthSignup.addEventListener("click", async () => {
+  authError.classList.add("hidden");
+  try {
+    await createUserWithEmailAndPassword(auth, authEmailInput.value.trim(), authPasswordInput.value);
+  } catch (err) {
+    showAuthError(describeAuthError(err));
+  }
+});
+
+btnAuthGoogle.addEventListener("click", async () => {
+  authError.classList.add("hidden");
+  try {
+    await signInWithPopup(auth, new GoogleAuthProvider());
+  } catch (err) {
+    if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
+      showAuthError(describeAuthError(err));
+    }
+  }
+});
+
+btnAuthAnon.addEventListener("click", async () => {
+  authError.classList.add("hidden");
+  try {
+    await signInAnonymously(auth);
+  } catch (err) {
+    showAuthError(describeAuthError(err));
+  }
+});
+
+btnLogout.addEventListener("click", async () => {
+  if (!confirm("Sair da conta neste aparelho?")) return;
+  try {
+    localStorage.removeItem("bapo-profile");
+    await signOut(auth);
+    window.location.href = window.location.pathname;
+  } catch (e) {}
+});
+
+btnLinkGoogle.addEventListener("click", async () => {
+  try {
+    await linkWithPopup(auth.currentUser, new GoogleAuthProvider());
+    btnLinkGoogle.classList.add("hidden");
+    btnLogout.classList.remove("hidden");
+    if (myProfile) await saveProfile(myProfile); // agora sincroniza em users/{uid}
+    window.alert("Conta Google vinculada! Suas conversas continuam exatamente como estavam, e agora dá pra entrar com essa conta em qualquer aparelho.");
+  } catch (err) {
+    if (err.code === "auth/credential-already-in-use") {
+      window.alert("Essa conta Google já é usada por outra conta do bapo. Se quiser usá-la, saia (Sair da conta) e entre com o Google na tela inicial — mas aí as conversas deste aparelho anônimo não vão junto.");
+    } else if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
+      window.alert("Não foi possível vincular: " + describeAuthError(err));
+    }
+  }
+});
+
+let bootStarted = false;
+
 onAuthStateChanged(auth, (user) => {
   if (user) {
     myUid = user.uid;
     authReadyResolve(user);
+    btnLogout.classList.toggle("hidden", user.isAnonymous);
+    btnLinkGoogle.classList.toggle("hidden", !user.isAnonymous);
+    if (!bootStarted) {
+      bootStarted = true;
+      boot();
+    }
+  } else {
+    screenAuth.classList.remove("hidden");
+    settingsFab.classList.remove("hidden");
   }
-});
-
-signInAnonymously(auth).catch((err) => {
-  showAppError("Não foi possível conectar: " + err.message);
 });
 
 // ---------- perfil (avatar + nome) ----------
 
-function loadProfile() {
+async function loadProfile() {
+  if (auth.currentUser && !auth.currentUser.isAnonymous) {
+    try {
+      const snap = await getDoc(doc(db, "users", myUid));
+      if (snap.exists()) return snap.data();
+    } catch (e) {}
+    return null;
+  }
   try {
     const raw = localStorage.getItem("bapo-profile");
     if (!raw) return null;
@@ -236,11 +491,16 @@ function loadProfile() {
   return null;
 }
 
-function saveProfile(profile) {
+async function saveProfile(profile) {
   myProfile = profile;
   try {
     localStorage.setItem("bapo-profile", JSON.stringify(profile));
   } catch (e) {}
+  if (auth.currentUser && !auth.currentUser.isAnonymous) {
+    try {
+      await setDoc(doc(db, "users", myUid), profile);
+    } catch (e) {}
+  }
 }
 
 function buildAvatarGrid() {
@@ -358,6 +618,7 @@ function showProfileScreen(prefill) {
   }
   selectAvatarInGrid(selectedAvatarSeed);
   updateProfileContinueState();
+  screenAuth.classList.add("hidden");
   screenProfile.classList.remove("hidden");
   screenApp.classList.add("hidden");
   settingsFab.classList.remove("hidden");
@@ -365,10 +626,11 @@ function showProfileScreen(prefill) {
 
 profileNameInput.addEventListener("input", updateProfileContinueState);
 
-btnProfileContinue.addEventListener("click", () => {
+btnProfileContinue.addEventListener("click", async () => {
   const name = profileNameInput.value.trim();
   if (!name) return;
-  saveProfile({ name, avatar: selectedAvatarSeed });
+  btnProfileContinue.disabled = true;
+  await saveProfile({ name, avatar: selectedAvatarSeed });
   updateProfileChip();
   screenProfile.classList.add("hidden");
   enterApp();
@@ -379,6 +641,30 @@ btnEditProfile.addEventListener("click", () => {
 });
 
 // ---------- app principal ----------
+
+async function boot() {
+  await ensureKeyPair();
+  const profile = await loadProfile();
+
+  const params = new URLSearchParams(window.location.search);
+  const invited = params.get("convite") ? params.get("convite").trim().toUpperCase() : null;
+  if (invited) {
+    const url = new URL(window.location.href);
+    url.search = "";
+    window.history.replaceState({}, "", url.toString());
+  }
+  pendingInvite = invited;
+
+  if (profile) {
+    myProfile = profile;
+    updateProfileChip();
+    screenAuth.classList.add("hidden");
+    screenProfile.classList.add("hidden");
+    enterApp();
+  } else {
+    showProfileScreen(null);
+  }
+}
 
 async function enterApp() {
   screenApp.classList.remove("hidden");
@@ -471,9 +757,10 @@ function renderChatList() {
 
     const preview = document.createElement("p");
     preview.className = "chat-item-preview";
-    preview.textContent = chat.lastMessage
-      ? (chat.lastMessage.senderName ? chat.lastMessage.senderName + ": " : "") + chat.lastMessage.text
-      : "Nenhuma mensagem ainda";
+    preview.textContent = "…";
+    decryptPreview(chat, chat.lastMessage).then((text) => {
+      preview.textContent = text;
+    });
     col.appendChild(preview);
 
     item.appendChild(col);
@@ -484,12 +771,15 @@ function renderChatList() {
 
 function openChat(chatId) {
   activeChatId = chatId;
+  chatMenu.classList.add("hidden");
   emptyState.classList.add("hidden");
   activeChatEl.classList.remove("hidden");
   screenApp.classList.add("showing-chat");
   messageInput.disabled = false;
   btnSend.disabled = false;
-  updateActiveChatHeader(chats.get(chatId));
+  const chat = chats.get(chatId);
+  updateActiveChatHeader(chat);
+  refreshMyPublicKeyIfNeeded(chat);
   subscribeToMessages(chatId);
   renderChatList();
   messageInput.focus();
@@ -539,11 +829,13 @@ function updateActiveChatHeader(chat) {
     chatSubtitleEl.textContent = `${memberCount} participante${memberCount === 1 ? "" : "s"}`;
     btnLeave.textContent = "Sair do grupo";
     btnLeave.title = "Sair do grupo";
+    btnParticipants.classList.remove("hidden");
   } else {
     btnLeave.textContent = "Apagar contato";
     btnLeave.title = "Apagar esse contato";
     if (memberCount < 2) chatSubtitleEl.textContent = "";
     // com 2 membros, o texto vem da presença (subscribePeerPresence/renderPresence)
+    btnParticipants.classList.add("hidden");
   }
 
   const waitingForPeer = memberCount < 2;
@@ -557,6 +849,7 @@ function updateActiveChatHeader(chat) {
 
 async function createDirectChat() {
   await authReady;
+  await ensureKeyPair();
   const code = randomCode();
   const chatRef = await addDoc(collection(db, "chats"), {
     type: "direct",
@@ -564,56 +857,60 @@ async function createDirectChat() {
     icon: null,
     inviteCode: code,
     memberIds: [myUid],
-    memberProfiles: { [myUid]: myProfile },
+    memberProfiles: { [myUid]: myMemberProfile() },
     createdAt: Date.now(),
     lastMessage: null,
   });
+  await setDoc(doc(db, "invites", code), { chatId: chatRef.id, type: "direct" });
   return chatRef.id;
 }
 
 async function createGroupChat(name, icon) {
   await authReady;
+  await ensureKeyPair();
   const code = randomCode();
+  const encKeyRaw = await generateGroupKeyRaw();
   const chatRef = await addDoc(collection(db, "chats"), {
     type: "group",
     name,
     icon,
     inviteCode: code,
+    encKeyRaw,
     memberIds: [myUid],
-    memberProfiles: { [myUid]: myProfile },
+    memberProfiles: { [myUid]: myMemberProfile() },
     createdAt: Date.now(),
     lastMessage: null,
   });
+  await setDoc(doc(db, "invites", code), { chatId: chatRef.id, type: "group", name });
   return chatRef.id;
 }
 
 async function handleJoinByCode(rawCode, opts = {}) {
   await authReady;
+  await ensureKeyPair();
   const code = rawCode.trim().toUpperCase();
   if (!code) return;
 
   try {
-    const q = query(collection(db, "chats"), where("inviteCode", "==", code));
-    const snap = await getDocs(q);
-    if (snap.empty) throw new Error("not-found");
+    const inviteSnap = await getDoc(doc(db, "invites", code));
+    if (!inviteSnap.exists()) throw new Error("not-found");
+    const { chatId } = inviteSnap.data();
+    const chatRef = doc(db, "chats", chatId);
 
-    const chatDoc = snap.docs[0];
-    const data = chatDoc.data();
-    const alreadyIn = (data.memberIds || []).includes(myUid);
+    await updateDoc(chatRef, {
+      memberIds: arrayUnion(myUid),
+      [`memberProfiles.${myUid}`]: myMemberProfile(),
+    });
 
-    if (!alreadyIn && data.type === "direct" && (data.memberIds || []).length >= 2) {
+    const chatSnap = await getDoc(chatRef);
+    const data = chatSnap.data();
+    if (data.type === "direct" && (data.memberIds || []).length > 2) {
+      await updateDoc(chatRef, { memberIds: arrayRemove(myUid) });
       throw new Error("full");
     }
 
-    if (!alreadyIn) {
-      await updateDoc(chatDoc.ref, {
-        memberIds: arrayUnion(myUid),
-        [`memberProfiles.${myUid}`]: myProfile,
-      });
-    }
-
     closeModal();
-    openChat(chatDoc.id);
+    openChat(chatId);
   } catch (err) {
     let msg = "Não foi possível entrar: " + err.message;
     if (err.message === "not-found") msg = "Código não encontrado.";
@@ -737,6 +1034,57 @@ function renderPeerPresence() {
   }
 }
 
+btnChatMenu.addEventListener("click", (e) => {
+  e.stopPropagation();
+  chatMenu.classList.toggle("hidden");
+});
+
+document.addEventListener("click", (e) => {
+  if (chatMenu.classList.contains("hidden")) return;
+  if (chatMenu.contains(e.target) || btnChatMenu.contains(e.target)) return;
+  chatMenu.classList.add("hidden");
+});
+
+[btnParticipants, btnChatInvite, btnClearChat, btnLeave].forEach((b) => {
+  b.addEventListener("click", () => chatMenu.classList.add("hidden"));
+});
+
+btnParticipants.addEventListener("click", () => {
+  const chat = chats.get(activeChatId);
+  if (!chat) return;
+  participantsList.innerHTML = "";
+  (chat.memberIds || []).forEach((uid) => {
+    const profile = chat.memberProfiles && chat.memberProfiles[uid];
+    const row = document.createElement("div");
+    row.className = "participant-row";
+
+    const avatar = document.createElement("img");
+    avatar.className = "participant-avatar";
+    avatar.alt = "";
+    if (profile) avatar.src = resolveAvatarSrc(profile.avatar);
+    row.appendChild(avatar);
+
+    const name = document.createElement("span");
+    name.className = "participant-name";
+    name.textContent = profile ? profile.name : "…";
+    if (uid === myUid) {
+      const you = document.createElement("span");
+      you.className = "participant-you";
+      you.textContent = " (você)";
+      name.appendChild(you);
+    }
+    row.appendChild(name);
+
+    participantsList.appendChild(row);
+  });
+  participantsModal.classList.remove("hidden");
+});
+
+btnCloseParticipants.addEventListener("click", () => participantsModal.classList.add("hidden"));
+participantsModal.addEventListener("click", (e) => {
+  if (e.target === participantsModal) participantsModal.classList.add("hidden");
+});
+
 btnChatInvite.addEventListener("click", async () => {
   const chat = chats.get(activeChatId);
   if (!chat) return;
@@ -767,7 +1115,7 @@ function flashText(button, text) {
   setTimeout(() => (button.textContent = original), 1500);
 }
 
-// ---------- mensagens ----------
+// ---------- mensagens (cifradas) ----------
 
 function subscribeToMessages(chatId) {
   if (unsubMessages) unsubMessages();
@@ -778,13 +1126,13 @@ function subscribeToMessages(chatId) {
   const q = query(collection(db, "chats", chatId, "messages"), orderBy("ts"));
   unsubMessages = onSnapshot(
     q,
-    (snap) => {
-      snap.docChanges().forEach((change) => {
+    async (snap) => {
+      for (const change of snap.docChanges()) {
         const data = change.doc.data();
         if (change.type === "added") {
-          if (renderedMessageIds.has(change.doc.id)) return;
+          if (renderedMessageIds.has(change.doc.id)) continue;
           renderedMessageIds.add(change.doc.id);
-          renderMessage(change.doc.id, data);
+          await renderMessage(change.doc.id, data);
           markAsReadIfNeeded(chatId, change.doc.id, data);
         } else if (change.type === "modified") {
           updateMessageTicks(change.doc.id, data);
@@ -794,7 +1142,7 @@ function subscribeToMessages(chatId) {
           messageRows.delete(change.doc.id);
           renderedMessageIds.delete(change.doc.id);
         }
-      });
+      }
     },
     (err) => showAppError("Erro nas mensagens: " + err.message)
   );
@@ -805,6 +1153,7 @@ function markAsReadIfNeeded(chatId, messageId, data) {
   if ((data.readBy || []).includes(myUid)) return;
   updateDoc(doc(db, "chats", chatId, "messages", messageId), {
     readBy: arrayUnion(myUid),
+    [`readAt.${myUid}`]: Date.now(),
   }).catch(() => {});
 }
 
@@ -819,7 +1168,15 @@ function isReadByOthers(chat, readBy) {
   return others.some((id) => readBy.includes(id));
 }
 
-function renderMessage(id, data) {
+function readTooltip(chat, readAt) {
+  if (!chat || !readAt) return "Enviada";
+  const others = (chat.memberIds || []).filter((id) => id !== myUid);
+  const times = others.map((id) => readAt[id]).filter(Boolean);
+  if (!times.length) return "Enviada, ainda não vista";
+  return "Visto às " + formatTime(Math.max(...times));
+}
+
+async function renderMessage(id, data) {
   const isMe = data.senderId === myUid;
   const chat = chats.get(activeChatId);
 
@@ -840,7 +1197,7 @@ function renderMessage(id, data) {
   bubble.className = "bubble " + (isMe ? "bubble-me" : "bubble-them");
 
   const textNode = document.createElement("span");
-  textNode.textContent = data.text;
+  textNode.textContent = await decryptMessageText(chat, data);
   bubble.appendChild(textNode);
 
   const time = document.createElement("span");
@@ -853,6 +1210,7 @@ function renderMessage(id, data) {
     ticksEl = document.createElement("span");
     ticksEl.className = "msg-ticks";
     ticksEl.textContent = "✓✓";
+    ticksEl.title = readTooltip(chat, data.readAt);
     if (isReadByOthers(chat, data.readBy)) ticksEl.classList.add("read");
     time.appendChild(ticksEl);
   }
@@ -865,6 +1223,17 @@ function renderMessage(id, data) {
   messageRows.set(id, { row, ticksEl, data });
 }
 
+async function decryptMessageText(chat, data) {
+  if (!data.ciphertext) return data.text || "";
+  const key = await getChatKey(chat);
+  if (!key) return "🔒 (sem chave de criptografia ainda)";
+  try {
+    return await decryptText(key, data.ciphertext, data.iv);
+  } catch (e) {
+    return "🔒 (não foi possível decifrar)";
+  }
+}
+
 function updateMessageTicks(id, data) {
   const entry = messageRows.get(id);
   if (!entry) return;
@@ -872,25 +1241,36 @@ function updateMessageTicks(id, data) {
   if (!entry.ticksEl) return;
   const chat = chats.get(activeChatId);
   entry.ticksEl.classList.toggle("read", isReadByOthers(chat, data.readBy));
+  entry.ticksEl.title = readTooltip(chat, data.readAt);
 }
 
 messageForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = messageInput.value.trim();
   if (!text || !activeChatId) return;
-  messageInput.value = "";
 
+  const chat = chats.get(activeChatId);
+  const key = await getChatKey(chat);
+  if (!key) {
+    showAppError("Ainda não foi possível estabelecer a chave de criptografia desta conversa. Tente de novo em instantes.");
+    return;
+  }
+
+  messageInput.value = "";
   const ts = Date.now();
   const chatRef = doc(db, "chats", activeChatId);
   try {
+    const { ciphertext, iv } = await encryptText(key, text);
     await addDoc(collection(chatRef, "messages"), {
       senderId: myUid,
       senderName: myProfile.name,
-      text,
+      ciphertext,
+      iv,
       ts,
       readBy: [],
+      readAt: {},
     });
-    await updateDoc(chatRef, { lastMessage: { text, senderName: myProfile.name, ts } });
+    await updateDoc(chatRef, { lastMessage: { ciphertext, iv, senderName: myProfile.name, ts } });
   } catch (err) {
     showAppError("Não foi possível enviar: " + err.message);
   }
@@ -1062,31 +1442,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     settingsPanel.classList.add("hidden");
     if (!modalOverlay.classList.contains("hidden")) closeModal();
+    participantsModal.classList.add("hidden");
+    chatMenu.classList.add("hidden");
   }
 });
 
 buildColorSwatches();
 applyAppearance();
-
-// ---------- inicialização ----------
-
-const params = new URLSearchParams(window.location.search);
-const invited = params.get("convite") ? params.get("convite").trim().toUpperCase() : null;
-const savedProfile = loadProfile();
-
-if (invited) {
-  const url = new URL(window.location.href);
-  url.search = "";
-  window.history.replaceState({}, "", url.toString());
-}
-
-if (savedProfile) {
-  myProfile = savedProfile;
-  updateProfileChip();
-  screenProfile.classList.add("hidden");
-  pendingInvite = invited;
-  enterApp();
-} else {
-  pendingInvite = invited;
-  showProfileScreen(null);
-}

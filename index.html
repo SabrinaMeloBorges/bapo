@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>bapo — conversas e grupos em tempo real</title>
 <meta name="description" content="Converse e monte grupos em tempo real." />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<meta name="theme-color" content="#4f46e5" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="bapo" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -21,9 +28,41 @@
       <button type="button" data-theme-choice="dark">Escuro</button>
       <button type="button" data-theme-choice="system">Sistema</button>
     </div>
+
+    <button id="btn-link-google" class="btn btn-secondary settings-link-google hidden" type="button">Vincular conta Google (não perder mensagens)</button>
+    <button id="btn-logout" class="btn-link-small settings-logout hidden" type="button">Sair da conta</button>
   </div>
 
   <main class="app">
+
+    <!-- TELA -1: login por e-mail (opcional) -->
+    <section id="screen-auth" class="screen hidden">
+      <header class="brand">
+        <h1>bapo</h1>
+        <p class="tagline">entre com e-mail pra usar seus contatos em qualquer aparelho.</p>
+      </header>
+
+      <div class="card">
+        <label for="auth-email" class="small-label">E-mail</label>
+        <input id="auth-email" type="email" placeholder="voce@email.com" autocomplete="email" />
+
+        <label for="auth-password" class="small-label" style="margin-top:12px;">Senha</label>
+        <input id="auth-password" type="password" placeholder="Pelo menos 6 caracteres" autocomplete="current-password" />
+
+        <button id="btn-auth-login" class="btn btn-primary" type="button" style="margin-top:16px;">Entrar</button>
+        <button id="btn-auth-signup" class="btn btn-secondary" type="button" style="margin-top:8px;width:100%;">Criar conta</button>
+
+        <p id="auth-error" class="error hidden" role="alert"></p>
+
+        <div class="divider"><span>ou</span></div>
+
+        <button id="btn-auth-google" class="btn btn-secondary" type="button">Entrar com Google</button>
+
+        <div class="divider"><span>ou</span></div>
+
+        <button id="btn-auth-anon" class="btn btn-link" type="button">Continuar sem conta (só neste aparelho)</button>
+      </div>
+    </section>
 
     <!-- TELA 0: perfil -->
     <section id="screen-profile" class="screen">
@@ -82,9 +121,15 @@
                 <p id="chat-subtitle" class="muted small">conectando…</p>
               </div>
             </div>
-            <button id="btn-chat-invite" class="btn-ghost" type="button" title="Convidar alguém">Convidar</button>
-            <button id="btn-clear-chat" class="btn-ghost" type="button" title="Apagar as mensagens desta conversa">Limpar chat</button>
-            <button id="btn-leave" class="btn-ghost" type="button" title="Sair da conversa">Sair</button>
+            <div class="chat-menu-wrap">
+              <button id="btn-chat-menu" class="btn-icon" type="button" title="Mais opções" aria-label="Mais opções">⋮</button>
+              <div id="chat-menu" class="chat-menu hidden">
+                <button id="btn-participants" type="button" class="chat-menu-item hidden">Ver participantes</button>
+                <button id="btn-chat-invite" type="button" class="chat-menu-item">Convidar</button>
+                <button id="btn-clear-chat" type="button" class="chat-menu-item">Limpar chat</button>
+                <button id="btn-leave" type="button" class="chat-menu-item danger">Sair</button>
+              </div>
+            </div>
           </header>
 
           <div id="invite-banner" class="invite-banner hidden">
@@ -95,6 +140,7 @@
           <div id="messages" class="messages" role="log" aria-live="polite"></div>
 
           <form id="message-form" class="message-form" autocomplete="off">
+            <span class="lock-icon" title="Mensagens protegidas por criptografia">🔒</span>
             <input id="message-input" type="text" placeholder="Escreva uma mensagem…" maxlength="1000" disabled />
             <button id="btn-send" class="btn btn-primary btn-send" type="submit" disabled>Enviar</button>
           </form>
@@ -106,6 +152,15 @@
   </main>
 
   <p id="app-error" class="error hidden" role="alert"></p>
+
+  <!-- Modal: participantes do grupo -->
+  <div id="participants-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <p class="card-title">Participantes</p>
+      <div id="participants-list" class="participants-list"></div>
+      <button id="btn-close-participants" class="btn-link" type="button">Fechar</button>
+    </div>
+  </div>
 
   <!-- Modal: nova conversa / grupo / entrar com código -->
   <div id="new-chat-modal" class="modal-overlay hidden">
