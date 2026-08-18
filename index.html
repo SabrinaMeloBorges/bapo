@@ -165,6 +165,14 @@
 
           <div id="messages" class="messages" role="log" aria-live="polite"></div>
 
+          <div id="reply-preview" class="reply-preview hidden">
+            <div class="reply-preview-col">
+              <strong id="reply-preview-name"></strong>
+              <p id="reply-preview-body"></p>
+            </div>
+            <button id="btn-cancel-reply" type="button" title="Cancelar resposta">✕</button>
+          </div>
+
           <form id="message-form" class="message-form" autocomplete="off">
             <span class="lock-icon" title="Mensagens protegidas por criptografia">🔒</span>
             <input id="message-input" type="text" placeholder="Escreva uma mensagem…" maxlength="1000" disabled />

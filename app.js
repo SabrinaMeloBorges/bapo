@@ -6,6 +6,7 @@ import {
   createUserWithEmailAndPassword,
   signInWithPopup,
   linkWithPopup,
+  signInWithCredential,
   GoogleAuthProvider,
   signOut,
   onAuthStateChanged,
@@ -312,6 +313,10 @@ const messagesEl = el("messages");
 const messageForm = el("message-form");
 const messageInput = el("message-input");
 const btnSend = el("btn-send");
+const replyPreview = el("reply-preview");
+const replyPreviewName = el("reply-preview-name");
+const replyPreviewBody = el("reply-preview-body");
+const btnCancelReply = el("btn-cancel-reply");
 
 const appError = el("app-error");
 
@@ -355,6 +360,8 @@ let unsubChatList = null;
 let unsubMessages = null;
 let renderedMessageIds = new Set();
 const messageRows = new Map(); // messageId -> { row, ticksEl, data }
+const decryptedTextCache = new Map(); // messageId -> texto já decifrado (só em memória, enquanto o chat está aberto)
+let replyingTo = null; // { messageId, senderName }
 
 let presenceInterval = null;
 let unsubPeerPresence = null;
@@ -452,6 +459,7 @@ btnLogout.addEventListener("click", async () => {
 });
 
 btnLinkGoogle.addEventListener("click", async () => {
+  const oldUid = myUid;
   try {
     await linkWithPopup(auth.currentUser, new GoogleAuthProvider());
     btnLinkGoogle.classList.add("hidden");
@@ -460,12 +468,87 @@ btnLinkGoogle.addEventListener("click", async () => {
     window.alert("Conta Google vinculada! Suas conversas continuam exatamente como estavam, e agora dá pra entrar com essa conta em qualquer aparelho.");
   } catch (err) {
     if (err.code === "auth/credential-already-in-use") {
-      window.alert("Essa conta Google já é usada por outra conta do bapo. Se quiser usá-la, saia (Sair da conta) e entre com o Google na tela inicial — mas aí as conversas deste aparelho anônimo não vão junto.");
+      const merge = window.confirm(
+        "Essa conta Google já tem um perfil no bapo (usado em outro aparelho). " +
+          "Quer continuar mesmo assim? As conversas deste aparelho serão somadas às que essa conta já tem — nada é apagado, e você não precisa se desconectar de lugar nenhum."
+      );
+      if (!merge) return;
+      try {
+        // precisa buscar as conversas ANTES de trocar de conta: depois de
+        // trocar, as regras de segurança corretamente bloqueiam a leitura de
+        // conversas onde a conta nova ainda não é membro.
+        const chatsToMigrate = await findChatsForUid(oldUid);
+        const credential = GoogleAuthProvider.credentialFromError(err);
+        await signInWithCredential(auth, credential);
+        const newUid = auth.currentUser.uid;
+        await migrateUidInChats(oldUid, newUid, chatsToMigrate);
+        myUid = newUid;
+        const profile = await loadProfile();
+        if (profile) {
+          myProfile = profile;
+          updateProfileChip();
+        }
+        btnLinkGoogle.classList.add("hidden");
+        btnLogout.classList.remove("hidden");
+        subscribeToChatList();
+        window.alert("Pronto! As conversas deste aparelho agora fazem parte da sua conta Google, junto com as que já existiam.");
+      } catch (mergeErr) {
+        window.alert("Não foi possível concluir: " + mergeErr.message);
+      }
     } else if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
       window.alert("Não foi possível vincular: " + describeAuthError(err));
     }
   }
 });
+
+async function findChatsForUid(uid) {
+  const q = query(collection(db, "chats"), where("memberIds", "array-contains", uid));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ref: d.ref, data: d.data() }));
+}
+
+// Transfere a titularidade das conversas de um uid antigo (ex: sessão anônima
+// deste aparelho) para um uid novo (a conta Google que já existia), sem
+// perder nenhuma mensagem — só troca quem é "dono" de cada uma. `chatsList`
+// precisa ter sido buscado ENQUANTO ainda autenticado como oldUid (ver
+// findChatsForUid) — depois de trocar de conta as regras já não deixam mais
+// ler essas conversas antigas por essa rota.
+async function migrateUidInChats(oldUid, newUid, chatsList) {
+  for (const chatDoc of chatsList) {
+    const data = chatDoc.data;
+    const newMemberIds = (data.memberIds || []).map((id) => (id === oldUid ? newUid : id));
+
+    const swapKey = (obj) => {
+      if (!obj || obj[oldUid] === undefined) return obj || {};
+      const copy = { ...obj };
+      copy[newUid] = copy[oldUid];
+      delete copy[oldUid];
+      return copy;
+    };
+
+    const update = {
+      memberIds: newMemberIds,
+      memberProfiles: swapKey(data.memberProfiles),
+      unreadCount: swapKey(data.unreadCount),
+      typing: swapKey(data.typing),
+    };
+    if (data.lastMessage && data.lastMessage.senderId === oldUid) {
+      update["lastMessage.senderId"] = newUid;
+    }
+    await updateDoc(chatDoc.ref, update);
+
+    const msgsSnap = await getDocs(query(collection(db, "chats", chatDoc.id, "messages"), where("senderId", "==", oldUid)));
+    if (!msgsSnap.empty) {
+      const batch = writeBatch(db);
+      msgsSnap.forEach((m) => {
+        const readBy = (m.data().readBy || []).map((id) => (id === oldUid ? newUid : id));
+        const readAt = swapKey(m.data().readAt);
+        batch.update(m.ref, { senderId: newUid, readBy, readAt });
+      });
+      await batch.commit();
+    }
+  }
+}
 
 let bootStarted = false;
 
@@ -643,11 +726,37 @@ btnProfileContinue.addEventListener("click", async () => {
   const name = profileNameInput.value.trim();
   if (!name) return;
   btnProfileContinue.disabled = true;
-  await saveProfile({ name, avatar: selectedAvatarSeed });
+  const profile = { name, avatar: selectedAvatarSeed };
+  const isEdit = !!myProfile;
+  await saveProfile(profile);
   updateProfileChip();
-  screenProfile.classList.add("hidden");
-  enterApp();
+  if (isEdit) {
+    propagateProfileToChats(profile).catch(() => {});
+    screenProfile.classList.add("hidden");
+    screenApp.classList.remove("hidden");
+    settingsFab.classList.add("hidden");
+    btnProfileContinue.disabled = false;
+  } else {
+    screenProfile.classList.add("hidden");
+    enterApp();
+  }
 });
+
+// Quando o nome/foto muda, atualiza na hora em toda conversa que a pessoa já
+// participa — quem estiver com o chat aberto vê a mudança em tempo real,
+// porque já está ouvindo esse mesmo documento (subscribeToChatList).
+async function propagateProfileToChats(profile) {
+  if (!myUid) return;
+  const q = query(collection(db, "chats"), where("memberIds", "array-contains", myUid));
+  const snap = await getDocs(q);
+  if (snap.empty) return;
+  const batch = writeBatch(db);
+  snap.forEach((d) => {
+    const existing = (d.data().memberProfiles && d.data().memberProfiles[myUid]) || {};
+    batch.update(d.ref, { [`memberProfiles.${myUid}`]: { ...existing, name: profile.name, avatar: profile.avatar } });
+  });
+  await batch.commit();
+}
 
 btnEditProfile.addEventListener("click", () => {
   showProfileScreen(myProfile);
@@ -1061,7 +1170,11 @@ function writePresence(state) {
   setDoc(presenceRef(myUid), { state, lastActiveAt: Date.now() }).catch(() => {});
 }
 
+let presenceHeartbeatStarted = false;
+
 function startPresenceHeartbeat() {
+  if (presenceHeartbeatStarted) return;
+  presenceHeartbeatStarted = true;
   const beat = () => writePresence(document.hasFocus() ? "online" : "inactive");
   beat();
   presenceInterval = setInterval(beat, PRESENCE_HEARTBEAT_MS);
@@ -1103,9 +1216,40 @@ function setStatusDot(state) {
 // Função "guarda-chuva" chamada sempre que algo pode ter mudado o texto
 // abaixo do nome no cabeçalho: presença do outro membro, ou alguém
 // digitando (em conversas individuais ou em grupos).
+let typingBubbleEl = null;
+
+function updateTypingBubble(chat) {
+  let showBubble = false;
+  if (chat) {
+    if (chat.type === "group") {
+      showBubble = (chat.memberIds || []).some((uid) => uid !== myUid && isTyping(chat, uid));
+    } else {
+      const otherUid = (chat.memberIds || []).find((id) => id !== myUid);
+      showBubble = isTyping(chat, otherUid);
+    }
+  }
+
+  if (showBubble) {
+    if (!typingBubbleEl) {
+      typingBubbleEl = document.createElement("div");
+      typingBubbleEl.className = "message-row row-them typing-row";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble bubble-them typing-bubble";
+      bubble.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
+      typingBubbleEl.appendChild(bubble);
+      messagesEl.appendChild(typingBubbleEl);
+    }
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  } else if (typingBubbleEl) {
+    typingBubbleEl.remove();
+    typingBubbleEl = null;
+  }
+}
+
 function renderPeerPresence() {
   const chat = chats.get(activeChatId);
   if (!chat) return;
+  updateTypingBubble(chat);
 
   if (chat.type === "group") {
     const typers = (chat.memberIds || [])
@@ -1231,6 +1375,9 @@ function flashText(button, text) {
 function subscribeToMessages(chatId) {
   if (unsubMessages) unsubMessages();
   messagesEl.innerHTML = "";
+  typingBubbleEl = null;
+  decryptedTextCache.clear();
+  cancelReply();
   renderedMessageIds = new Set();
   messageRows.clear();
 
@@ -1307,8 +1454,29 @@ async function renderMessage(id, data) {
   const bubble = document.createElement("div");
   bubble.className = "bubble " + (isMe ? "bubble-me" : "bubble-them");
 
+  if (data.replyTo) {
+    const quote = document.createElement("div");
+    quote.className = "msg-quote";
+    const quoteName = document.createElement("span");
+    quoteName.className = "msg-quote-name";
+    quoteName.textContent = data.replyTo.senderName;
+    const quoteBody = document.createElement("span");
+    quoteBody.className = "msg-quote-body";
+    quoteBody.textContent = decryptedTextCache.get(data.replyTo.messageId) || "mensagem original não disponível";
+    quote.appendChild(quoteName);
+    quote.appendChild(quoteBody);
+    quote.addEventListener("click", () => {
+      const original = messageRows.get(data.replyTo.messageId);
+      if (original) original.row.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    bubble.appendChild(quote);
+  }
+
+  const text = await decryptMessageText(chat, data);
+  decryptedTextCache.set(id, text);
+
   const textNode = document.createElement("span");
-  textNode.textContent = await decryptMessageText(chat, data);
+  textNode.textContent = text;
   bubble.appendChild(textNode);
 
   const time = document.createElement("span");
@@ -1326,9 +1494,18 @@ async function renderMessage(id, data) {
     time.appendChild(ticksEl);
   }
 
+  const replyBtn = document.createElement("button");
+  replyBtn.type = "button";
+  replyBtn.className = "msg-reply-btn";
+  replyBtn.title = "Responder";
+  replyBtn.textContent = "↩";
+  replyBtn.addEventListener("click", () => startReply(id, isMe ? "Você" : data.senderName, text));
+
   col.appendChild(bubble);
   row.appendChild(col);
+  row.appendChild(replyBtn);
   messagesEl.appendChild(row);
+  if (typingBubbleEl) messagesEl.appendChild(typingBubbleEl); // mantém a bolha de "digitando" sempre por último
   messagesEl.scrollTop = messagesEl.scrollHeight;
 
   messageRows.set(id, { row, ticksEl, data });
@@ -1361,11 +1538,39 @@ messageInput.addEventListener("input", () => {
   if (!activeChatId) return;
   const chat = chats.get(activeChatId);
   if (!chat || (chat.memberIds || []).length < 2) return;
+
+  if (!messageInput.value) {
+    // apagou tudo: avisa que parou de digitar imediatamente, sem esperar o TTL
+    lastTypingWriteAt = 0;
+    updateDoc(doc(db, "chats", activeChatId), { [`typing.${myUid}`]: 0 }).catch(() => {});
+    return;
+  }
+
   const now = Date.now();
   if (now - lastTypingWriteAt < TYPING_WRITE_THROTTLE_MS) return;
   lastTypingWriteAt = now;
   updateDoc(doc(db, "chats", activeChatId), { [`typing.${myUid}`]: now }).catch(() => {});
 });
+
+messageInput.addEventListener("blur", () => {
+  if (!activeChatId) return;
+  updateDoc(doc(db, "chats", activeChatId), { [`typing.${myUid}`]: 0 }).catch(() => {});
+});
+
+function startReply(messageId, senderName, text) {
+  replyingTo = { messageId, senderName };
+  replyPreviewName.textContent = senderName;
+  replyPreviewBody.textContent = text;
+  replyPreview.classList.remove("hidden");
+  messageInput.focus();
+}
+
+function cancelReply() {
+  replyingTo = null;
+  replyPreview.classList.add("hidden");
+}
+
+btnCancelReply.addEventListener("click", cancelReply);
 
 messageForm.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1382,9 +1587,11 @@ messageForm.addEventListener("submit", async (e) => {
   messageInput.value = "";
   const ts = Date.now();
   const chatRef = doc(db, "chats", activeChatId);
+  const replySnapshot = replyingTo;
+  cancelReply();
   try {
     const { ciphertext, iv } = await encryptText(key, text);
-    await addDoc(collection(chatRef, "messages"), {
+    const msgData = {
       senderId: myUid,
       senderName: myProfile.name,
       ciphertext,
@@ -1392,7 +1599,9 @@ messageForm.addEventListener("submit", async (e) => {
       ts,
       readBy: [],
       readAt: {},
-    });
+    };
+    if (replySnapshot) msgData.replyTo = { messageId: replySnapshot.messageId, senderName: replySnapshot.senderName };
+    await addDoc(collection(chatRef, "messages"), msgData);
     const chatUpdate = { lastMessage: { ciphertext, iv, senderName: myProfile.name, senderId: myUid, ts }, [`typing.${myUid}`]: 0 };
     (chat.memberIds || [])
       .filter((uid) => uid !== myUid)
