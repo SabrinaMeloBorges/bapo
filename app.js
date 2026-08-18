@@ -299,6 +299,8 @@ const btnClearChat = el("btn-clear-chat");
 const btnLeave = el("btn-leave");
 const inviteBanner = el("invite-banner");
 const inviteBannerCode = el("invite-banner-code");
+const keyPendingBanner = el("key-pending-banner");
+const keyPendingText = el("key-pending-text");
 const btnInviteBannerCopy = el("btn-invite-banner-copy");
 
 const messagesEl = el("messages");
@@ -841,6 +843,18 @@ function updateActiveChatHeader(chat) {
   const waitingForPeer = memberCount < 2;
   inviteBanner.classList.toggle("hidden", !waitingForPeer);
   if (waitingForPeer) inviteBannerCode.textContent = chat.inviteCode;
+
+  const otherProfile = info.otherUid && chat.memberProfiles ? chat.memberProfiles[info.otherUid] : null;
+  const waitingForKey = chat.type === "direct" && !waitingForPeer && (!otherProfile || !otherProfile.publicKeyJwk);
+  keyPendingBanner.classList.toggle("hidden", !waitingForKey);
+  if (waitingForKey) {
+    keyPendingText.textContent = `Essa conversa é de antes da criptografia. Peça pra ${otherProfile ? otherProfile.name : "a outra pessoa"} abrir essa conversa uma vez pra continuar.`;
+    messageInput.disabled = true;
+    btnSend.disabled = true;
+  } else if (!waitingForPeer) {
+    messageInput.disabled = false;
+    btnSend.disabled = false;
+  }
 
   subscribePeerPresence(chat, info.otherUid);
 }
