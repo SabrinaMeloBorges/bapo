@@ -26,6 +26,8 @@ import {
   onSnapshot,
   arrayUnion,
   arrayRemove,
+  increment,
+  deleteField,
   orderBy,
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
@@ -55,6 +57,8 @@ const COLOR_THEMES = {
 const PRESENCE_HEARTBEAT_MS = 20000;
 const PRESENCE_ONLINE_WINDOW_MS = 35000;
 const PRESENCE_INACTIVE_WINDOW_MS = 5 * 60000;
+const TYPING_TTL_MS = 4000;
+const TYPING_WRITE_THROTTLE_MS = 2000;
 const MESSAGE_TTL_MS = 30 * 60000;
 const PURGE_CHECK_INTERVAL_MS = 5 * 60000;
 
@@ -286,6 +290,7 @@ const emptyState = el("empty-state");
 const activeChatEl = el("active-chat");
 const btnBackSidebar = el("btn-back-sidebar");
 const chatAvatarImg = el("chat-avatar");
+const chatStatusDot = el("chat-status-dot");
 const chatTitleEl = el("chat-title");
 const chatSubtitleEl = el("chat-subtitle");
 const btnChatMenu = el("btn-chat-menu");
@@ -682,7 +687,8 @@ async function enterApp() {
   startPresenceHeartbeat();
   startAutoPurge();
   if (!presenceRenderInterval) {
-    presenceRenderInterval = setInterval(renderPeerPresence, 15000);
+    // roda rápido (é só cálculo local) pra "digitando…" sumir sem demora perceptível
+    presenceRenderInterval = setInterval(renderPeerPresence, 1500);
   }
   if (pendingInvite) {
     const code = pendingInvite;
@@ -780,8 +786,10 @@ function renderChatList() {
     }
     col.appendChild(nameRow);
 
+    const unreadCount = (chat.unreadCount && chat.unreadCount[myUid]) || 0;
+
     const preview = document.createElement("p");
-    preview.className = "chat-item-preview";
+    preview.className = "chat-item-preview" + (unreadCount > 0 ? " unread" : "");
     preview.textContent = "…";
     decryptPreview(chat, chat.lastMessage).then((text) => {
       preview.textContent = text;
@@ -789,9 +797,29 @@ function renderChatList() {
     col.appendChild(preview);
 
     item.appendChild(col);
+
+    if (unreadCount > 0) {
+      const badge = document.createElement("span");
+      badge.className = "chat-item-badge";
+      badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+      item.appendChild(badge);
+    }
+
     item.addEventListener("click", () => openChat(chat.id));
     chatListEl.appendChild(item);
   });
+
+  updateTitleBadge();
+}
+
+function updateTitleBadge() {
+  const total = [...chats.values()].reduce((sum, c) => sum + ((c.unreadCount && c.unreadCount[myUid]) || 0), 0);
+  document.title = total > 0 ? `(${total > 99 ? "99+" : total}) bapo` : "bapo — conversas e grupos em tempo real";
+}
+
+function markChatAsRead(chatId, chat) {
+  if (!chat || !chat.unreadCount || !chat.unreadCount[myUid]) return;
+  updateDoc(doc(db, "chats", chatId), { [`unreadCount.${myUid}`]: 0 }).catch(() => {});
 }
 
 function openChat(chatId) {
@@ -806,6 +834,7 @@ function openChat(chatId) {
   updateActiveChatHeader(chat);
   refreshMyPublicKeyIfNeeded(chat);
   subscribeToMessages(chatId);
+  markChatAsRead(chatId, chat);
   renderChatList();
   messageInput.focus();
 }
@@ -851,16 +880,18 @@ function updateActiveChatHeader(chat) {
 
   const memberCount = (chat.memberIds || []).length;
   if (chat.type === "group") {
-    chatSubtitleEl.textContent = `${memberCount} participante${memberCount === 1 ? "" : "s"}`;
     btnLeave.textContent = "Sair do grupo";
     btnLeave.title = "Sair do grupo";
     btnParticipants.classList.remove("hidden");
+    chatStatusDot.classList.add("hidden"); // sem presença individual em grupos
   } else {
     btnLeave.textContent = "Apagar contato";
     btnLeave.title = "Apagar esse contato";
-    if (memberCount < 2) chatSubtitleEl.textContent = "";
-    // com 2 membros, o texto vem da presença (subscribePeerPresence/renderPresence)
     btnParticipants.classList.add("hidden");
+    if (memberCount < 2) {
+      chatSubtitleEl.textContent = "";
+      chatStatusDot.classList.add("hidden");
+    }
   }
 
   const waitingForPeer = memberCount < 2;
@@ -880,6 +911,7 @@ function updateActiveChatHeader(chat) {
   }
 
   subscribePeerPresence(chat, info.otherUid);
+  renderPeerPresence();
 }
 
 // ---------- criar / entrar em conversas ----------
@@ -1053,21 +1085,63 @@ function subscribePeerPresence(chat, otherUid) {
   });
 }
 
+function isTyping(chat, uid) {
+  if (!chat || !chat.typing || !uid) return false;
+  const ts = chat.typing[uid];
+  return !!ts && Date.now() - ts < TYPING_TTL_MS;
+}
+
+function setStatusDot(state) {
+  chatStatusDot.classList.remove("hidden", "online", "inactive", "hibernating");
+  if (!state) {
+    chatStatusDot.classList.add("hidden");
+    return;
+  }
+  chatStatusDot.classList.add(state);
+}
+
+// Função "guarda-chuva" chamada sempre que algo pode ter mudado o texto
+// abaixo do nome no cabeçalho: presença do outro membro, ou alguém
+// digitando (em conversas individuais ou em grupos).
 function renderPeerPresence() {
   const chat = chats.get(activeChatId);
-  if (!chat || chat.type !== "direct" || (chat.memberIds || []).length < 2) return;
+  if (!chat) return;
+
+  if (chat.type === "group") {
+    const typers = (chat.memberIds || [])
+      .filter((uid) => uid !== myUid && isTyping(chat, uid))
+      .map((uid) => (chat.memberProfiles && chat.memberProfiles[uid] && chat.memberProfiles[uid].name) || "alguém");
+    const memberCount = (chat.memberIds || []).length;
+    chatSubtitleEl.textContent = typers.length
+      ? typers.join(", ") + (typers.length === 1 ? " está digitando…" : " estão digitando…")
+      : `${memberCount} participante${memberCount === 1 ? "" : "s"}`;
+    return;
+  }
+
+  if ((chat.memberIds || []).length < 2) return;
+
+  const otherUid = (chat.memberIds || []).find((id) => id !== myUid);
+  if (isTyping(chat, otherUid)) {
+    chatSubtitleEl.textContent = "digitando…";
+    setStatusDot("online");
+    return;
+  }
 
   if (!lastPeerPresence) {
     chatSubtitleEl.textContent = "em hibernação";
+    setStatusDot("hibernating");
     return;
   }
   const diff = Date.now() - lastPeerPresence.lastActiveAt;
   if (diff < PRESENCE_ONLINE_WINDOW_MS && lastPeerPresence.state === "online") {
     chatSubtitleEl.textContent = "online agora";
+    setStatusDot("online");
   } else if (diff < PRESENCE_INACTIVE_WINDOW_MS) {
     chatSubtitleEl.textContent = "inativo";
+    setStatusDot("inactive");
   } else {
-    chatSubtitleEl.textContent = "em hibernação";
+    chatSubtitleEl.textContent = "visto por último às " + formatTime(lastPeerPresence.lastActiveAt);
+    setStatusDot("hibernating");
   }
 }
 
@@ -1281,6 +1355,18 @@ function updateMessageTicks(id, data) {
   entry.ticksEl.title = readTooltip(chat, data.readAt);
 }
 
+let lastTypingWriteAt = 0;
+
+messageInput.addEventListener("input", () => {
+  if (!activeChatId) return;
+  const chat = chats.get(activeChatId);
+  if (!chat || (chat.memberIds || []).length < 2) return;
+  const now = Date.now();
+  if (now - lastTypingWriteAt < TYPING_WRITE_THROTTLE_MS) return;
+  lastTypingWriteAt = now;
+  updateDoc(doc(db, "chats", activeChatId), { [`typing.${myUid}`]: now }).catch(() => {});
+});
+
 messageForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = messageInput.value.trim();
@@ -1307,7 +1393,13 @@ messageForm.addEventListener("submit", async (e) => {
       readBy: [],
       readAt: {},
     });
-    await updateDoc(chatRef, { lastMessage: { ciphertext, iv, senderName: myProfile.name, senderId: myUid, ts } });
+    const chatUpdate = { lastMessage: { ciphertext, iv, senderName: myProfile.name, senderId: myUid, ts }, [`typing.${myUid}`]: 0 };
+    (chat.memberIds || [])
+      .filter((uid) => uid !== myUid)
+      .forEach((uid) => {
+        chatUpdate[`unreadCount.${uid}`] = increment(1);
+      });
+    await updateDoc(chatRef, chatUpdate);
   } catch (err) {
     showAppError("Não foi possível enviar: " + err.message);
   }

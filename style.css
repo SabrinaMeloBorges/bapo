@@ -832,6 +832,50 @@ input[type="text"]:focus {
   object-fit: cover;
 }
 
+.status-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+}
+
+.status-dot.online {
+  background: var(--success);
+}
+
+.status-dot.inactive {
+  background: #f59e0b;
+}
+
+.status-dot.hibernating {
+  background: var(--muted);
+}
+
+/* --- selo de mensagens não vistas --- */
+
+.chat-item-badge {
+  flex-shrink: 0;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--primary-fg);
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-item-preview.unread {
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* --- configurações de aparência --- */
 
 .settings-fab {
