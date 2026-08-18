@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>bapo — chat rápido e sem histórico</title>
-<meta name="description" content="Converse em tempo real com outra pessoa. Nada é salvo." />
+<title>bapo — conversas e grupos em tempo real</title>
+<meta name="description" content="Converse e monte grupos em tempo real." />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -43,91 +43,100 @@
       </div>
     </section>
 
-    <!-- TELA 1: configuração da sala -->
-    <section id="screen-setup" class="screen hidden">
-      <header class="brand">
-        <h1>bapo</h1>
-        <p class="tagline">chat direto, em tempo real, sem histórico.</p>
-      </header>
+    <!-- TELA 1: app (barra lateral de conversas + painel principal) -->
+    <section id="screen-app" class="screen app-screen hidden">
 
-      <div id="profile-chip" class="profile-chip">
-        <img id="chip-avatar" class="chip-avatar" alt="" />
-        <span id="chip-name" class="chip-name"></span>
-        <button id="btn-edit-profile" class="btn-link-small" type="button">editar</button>
-      </div>
-
-      <div id="setup-auto" class="card hidden">
-        <p class="card-title">Você recebeu um convite</p>
-        <p class="muted">Código da sala: <strong id="auto-code">------</strong></p>
-        <div id="auto-status" class="status">
-          <span class="spinner" aria-hidden="true"></span>
-          <span id="auto-status-text">Conectando…</span>
-        </div>
-        <button id="btn-auto-retry" class="btn btn-primary hidden" type="button">Tentar novamente</button>
-        <button id="btn-auto-cancel" class="btn btn-link" type="button">Criar minha própria sala</button>
-      </div>
-
-      <div id="setup-options" class="options">
-        <div class="card">
-          <p class="card-title">Iniciar uma conversa</p>
-          <p class="muted">Crie uma sala e envie o link para a outra pessoa.</p>
-          <button id="btn-create" class="btn btn-primary" type="button">Criar sala</button>
-
-          <div id="share-box" class="share-box hidden">
-            <label for="share-link" class="small-label">Envie este link:</label>
-            <div class="copy-row">
-              <input id="share-link" type="text" readonly />
-              <button id="btn-copy" class="btn btn-secondary" type="button">Copiar</button>
-            </div>
-            <div class="status">
-              <span class="spinner" aria-hidden="true"></span>
-              <span id="host-status-text">Aguardando a outra pessoa entrar…</span>
-            </div>
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-header">
+          <div id="profile-chip" class="profile-chip">
+            <img id="chip-avatar" class="chip-avatar" alt="" />
+            <span id="chip-name" class="chip-name"></span>
+            <button id="btn-edit-profile" class="btn-link-small" type="button">editar</button>
           </div>
+          <button id="btn-settings-sidebar" class="btn-icon" type="button" title="Aparência" aria-label="Configurações de aparência">⚙</button>
+          <button id="btn-new-chat" class="btn-icon" type="button" title="Nova conversa ou grupo">+</button>
         </div>
 
-        <div class="divider"><span>ou</span></div>
+        <div id="chat-list" class="chat-list"></div>
+        <p id="chat-list-empty" class="muted chat-list-empty">Nenhuma conversa ainda. Toque em "+" pra começar.</p>
+      </aside>
 
-        <div class="card">
-          <p class="card-title">Entrar em uma conversa</p>
-          <p class="muted">Cole o código que você recebeu.</p>
-          <form id="join-form" class="join-row" autocomplete="off">
-            <input id="join-code" type="text" placeholder="Ex: A3F9K2" maxlength="6" />
-            <button id="btn-join" class="btn btn-primary" type="submit">Entrar</button>
+      <div id="main-panel" class="main-panel">
+        <div id="empty-state" class="empty-state">
+          <p class="empty-state-title">bapo</p>
+          <p class="muted">Selecione uma conversa ao lado ou crie uma nova.</p>
+        </div>
+
+        <div id="active-chat" class="active-chat hidden">
+          <header class="chat-header">
+            <button id="btn-back-sidebar" class="btn-icon back-btn" type="button" title="Voltar">←</button>
+            <div class="chat-header-info">
+              <div class="chat-avatar-wrap">
+                <img id="chat-avatar" class="chat-avatar" alt="" />
+              </div>
+              <div class="chat-header-text">
+                <p id="chat-title" class="chat-title">bapo</p>
+                <p id="chat-subtitle" class="muted small">conectando…</p>
+              </div>
+            </div>
+            <button id="btn-chat-invite" class="btn-ghost" type="button" title="Convidar alguém">Convidar</button>
+            <button id="btn-leave" class="btn-ghost" type="button" title="Sair da conversa">Sair</button>
+          </header>
+
+          <div id="invite-banner" class="invite-banner hidden">
+            <span>Aguardando alguém entrar. Código: <strong id="invite-banner-code"></strong></span>
+            <button id="btn-invite-banner-copy" class="btn-link-small" type="button">copiar link</button>
+          </div>
+
+          <div id="messages" class="messages" role="log" aria-live="polite"></div>
+
+          <form id="message-form" class="message-form" autocomplete="off">
+            <input id="message-input" type="text" placeholder="Escreva uma mensagem…" maxlength="1000" disabled />
+            <button id="btn-send" class="btn btn-primary btn-send" type="submit" disabled>Enviar</button>
           </form>
         </div>
       </div>
 
-      <p id="setup-error" class="error hidden" role="alert"></p>
-    </section>
-
-    <!-- TELA 2: chat -->
-    <section id="screen-chat" class="screen hidden">
-      <header class="chat-header">
-        <div class="chat-header-info">
-          <div class="chat-avatar-wrap">
-            <img id="peer-avatar" class="chat-avatar hidden" alt="" />
-            <span id="peer-dot" class="dot dot-offline" aria-hidden="true"></span>
-          </div>
-          <div>
-            <p id="chat-peer-name" class="chat-title">bapo</p>
-            <p id="peer-status-text" class="muted small">conectando…</p>
-          </div>
-        </div>
-        <button id="btn-leave" class="btn btn-ghost" type="button" title="Sair da conversa">Sair</button>
-      </header>
-
-      <div id="messages" class="messages" role="log" aria-live="polite"></div>
-
-      <form id="message-form" class="message-form" autocomplete="off">
-        <input id="message-input" type="text" placeholder="Escreva uma mensagem…" maxlength="1000" disabled />
-        <button id="btn-send" class="btn btn-primary btn-send" type="submit" disabled>Enviar</button>
-      </form>
+      <p id="app-error" class="error hidden" role="alert"></p>
     </section>
 
   </main>
 
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-  <script src="app.js"></script>
+  <!-- Modal: nova conversa / grupo / entrar com código -->
+  <div id="new-chat-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-tabs" id="modal-tabs">
+        <button type="button" class="tab active" data-tab="direct">Conversa</button>
+        <button type="button" class="tab" data-tab="group">Grupo</button>
+        <button type="button" class="tab" data-tab="join">Tenho um código</button>
+      </div>
+
+      <div id="tab-direct" class="tab-panel">
+        <p class="muted">Cria uma conversa individual. Envie o código pra outra pessoa entrar.</p>
+        <button id="btn-create-direct" class="btn btn-primary" type="button">Criar conversa</button>
+      </div>
+
+      <div id="tab-group" class="tab-panel hidden">
+        <label for="group-name-input" class="small-label">Nome do grupo</label>
+        <input id="group-name-input" type="text" placeholder="Ex: Viagem, Trabalho…" maxlength="30" />
+        <p class="small-label group-icon-label">Ícone do grupo</p>
+        <div id="group-icon-grid" class="avatar-grid"></div>
+        <button id="btn-create-group" class="btn btn-primary" type="button" disabled>Criar grupo</button>
+      </div>
+
+      <div id="tab-join" class="tab-panel hidden">
+        <label for="join-code-input" class="small-label">Código do convite</label>
+        <form id="join-form">
+          <input id="join-code-input" type="text" placeholder="Ex: A3F9K2" maxlength="6" />
+          <button id="btn-join-chat" class="btn btn-primary" type="submit">Entrar</button>
+        </form>
+      </div>
+
+      <p id="modal-error" class="error hidden" role="alert"></p>
+      <button id="btn-close-modal" class="btn-link" type="button">Fechar</button>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
 </body>
 </html>
