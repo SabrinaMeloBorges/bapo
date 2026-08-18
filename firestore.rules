@@ -3,7 +3,9 @@ rules_version = '2';
 // Modelo de segurança simples, no mesmo espírito do resto do app: quem tem o
 // código/link do chat consegue entrar (não há contas com senha). Qualquer
 // usuário autenticado (inclusive anônimo) pode ler/criar/atualizar chats e
-// mensagens, mas só pode enviar mensagens em nome de si mesmo.
+// mensagens, mas só pode enviar mensagens em nome de si mesmo. Update/delete
+// de mensagens agora é permitido (confirmação de leitura, limpar chat e a
+// limpeza automática por tempo precisam disso).
 service cloud.firestore {
   match /databases/{database}/documents {
     match /chats/{chatId} {
@@ -14,8 +16,16 @@ service cloud.firestore {
         allow read: if request.auth != null;
         allow create: if request.auth != null
                        && request.resource.data.senderId == request.auth.uid;
-        allow update, delete: if false;
+        allow update: if request.auth != null;
+        allow delete: if request.auth != null;
       }
+    }
+
+    // Presença (online / inativo / em hibernação): cada pessoa só escreve o
+    // próprio status, mas qualquer um autenticado pode ler o de quem quiser.
+    match /presence/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
     }
   }
 }

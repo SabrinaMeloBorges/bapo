@@ -11,6 +11,7 @@ import {
   collection,
   doc,
   addDoc,
+  setDoc,
   updateDoc,
   getDocs,
   query,
@@ -19,6 +20,7 @@ import {
   arrayUnion,
   arrayRemove,
   orderBy,
+  writeBatch,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 import { firebaseConfig, USE_EMULATOR } from "./firebase-config.js";
 
@@ -58,13 +60,47 @@ if (USE_EMULATOR) {
 
 const el = (id) => document.getElementById(id);
 
-function avatarUrl(seed) {
-  return `https://api.dicebear.com/9.x/${AVATAR_STYLE}/svg?seed=${encodeURIComponent(seed)}&size=80`;
+// Um avatar pessoal pode ser um "seed" (ilustração gerada) ou uma foto
+// enviada pelo usuário, guardada como data URL (base64) direto no perfil.
+function resolveAvatarSrc(value) {
+  if (!value) return "";
+  if (value.startsWith("data:image")) return value;
+  return `https://api.dicebear.com/9.x/${AVATAR_STYLE}/svg?seed=${encodeURIComponent(value)}&size=80`;
 }
 
 function groupIconUrl(seed) {
   return `https://api.dicebear.com/9.x/${GROUP_ICON_STYLE}/svg?seed=${encodeURIComponent(seed)}&size=80&backgroundType=gradientLinear`;
 }
+
+function resizeImageFile(file, size = 128, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        const scale = Math.max(size / img.width, size / img.height);
+        const w = img.width * scale;
+        const h = img.height * scale;
+        ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Não foi possível ler essa imagem."));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
+    reader.readAsDataURL(file);
+  });
+}
+
+const PRESENCE_HEARTBEAT_MS = 20000;
+const PRESENCE_ONLINE_WINDOW_MS = 35000;
+const PRESENCE_INACTIVE_WINDOW_MS = 5 * 60000;
+const MESSAGE_TTL_MS = 30 * 60000;
+const PURGE_CHECK_INTERVAL_MS = 5 * 60000;
 
 function randomCode(length = 6) {
   let code = "";
@@ -80,6 +116,8 @@ const screenProfile = el("screen-profile");
 const screenApp = el("screen-app");
 
 const avatarGrid = el("avatar-grid");
+const btnAvatarUpload = el("btn-avatar-upload");
+const avatarFileInput = el("avatar-file-input");
 const profileNameInput = el("profile-name");
 const btnProfileContinue = el("btn-profile-continue");
 
@@ -100,6 +138,7 @@ const chatAvatarImg = el("chat-avatar");
 const chatTitleEl = el("chat-title");
 const chatSubtitleEl = el("chat-subtitle");
 const btnChatInvite = el("btn-chat-invite");
+const btnClearChat = el("btn-clear-chat");
 const btnLeave = el("btn-leave");
 const inviteBanner = el("invite-banner");
 const inviteBannerCode = el("invite-banner-code");
@@ -145,6 +184,14 @@ let activeChatId = null;
 let unsubChatList = null;
 let unsubMessages = null;
 let renderedMessageIds = new Set();
+const messageRows = new Map(); // messageId -> { row, ticksEl, data }
+
+let presenceInterval = null;
+let unsubPeerPresence = null;
+let lastPeerPresence = null;
+let presenceRenderInterval = null;
+
+let autoPurgeInterval = null;
 
 function buildInviteLink(code) {
   const url = new URL(window.location.href);
@@ -206,7 +253,7 @@ function buildAvatarGrid() {
     btn.setAttribute("aria-label", "Avatar " + seed);
 
     const img = document.createElement("img");
-    img.src = avatarUrl(seed);
+    img.src = resolveAvatarSrc(seed);
     img.alt = "";
     btn.appendChild(img);
 
@@ -214,12 +261,49 @@ function buildAvatarGrid() {
       selectedAvatarSeed = seed;
       [...avatarGrid.children].forEach((c) => c.classList.remove("selected"));
       btn.classList.add("selected");
+      resetUploadTilePreview();
       updateProfileContinueState();
     });
 
     avatarGrid.appendChild(btn);
   });
+  avatarGrid.appendChild(btnAvatarUpload); // reencaixa o botão de upload no fim da grade
 }
+
+function resetUploadTilePreview() {
+  btnAvatarUpload.classList.remove("selected");
+  btnAvatarUpload.innerHTML = "<span>+</span>";
+}
+
+function setUploadTilePreview(dataUrl) {
+  btnAvatarUpload.innerHTML = "";
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  img.alt = "";
+  btnAvatarUpload.appendChild(img);
+  btnAvatarUpload.classList.add("selected");
+}
+
+btnAvatarUpload.addEventListener("click", () => avatarFileInput.click());
+
+avatarFileInput.addEventListener("change", async () => {
+  const file = avatarFileInput.files[0];
+  avatarFileInput.value = "";
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    window.alert("Escolha um arquivo de imagem.");
+    return;
+  }
+  try {
+    const dataUrl = await resizeImageFile(file);
+    selectedAvatarSeed = dataUrl;
+    [...avatarGrid.querySelectorAll(".avatar-option[data-seed]")].forEach((c) => c.classList.remove("selected"));
+    setUploadTilePreview(dataUrl);
+    updateProfileContinueState();
+  } catch (err) {
+    window.alert(err.message);
+  }
+});
 
 function buildGroupIconGrid() {
   groupIconGrid.innerHTML = "";
@@ -251,12 +335,15 @@ function updateProfileContinueState() {
 }
 
 function selectAvatarInGrid(seed) {
-  [...avatarGrid.children].forEach((c) => c.classList.toggle("selected", c.dataset.seed === seed));
+  const isUpload = seed && seed.startsWith("data:image");
+  [...avatarGrid.querySelectorAll(".avatar-option[data-seed]")].forEach((c) => c.classList.toggle("selected", !isUpload && c.dataset.seed === seed));
+  if (isUpload) setUploadTilePreview(seed);
+  else resetUploadTilePreview();
 }
 
 function updateProfileChip() {
   if (!myProfile) return;
-  chipAvatar.src = avatarUrl(myProfile.avatar);
+  chipAvatar.src = resolveAvatarSrc(myProfile.avatar);
   chipName.textContent = myProfile.name;
 }
 
@@ -298,6 +385,11 @@ async function enterApp() {
   settingsFab.classList.add("hidden");
   await authReady;
   subscribeToChatList();
+  startPresenceHeartbeat();
+  startAutoPurge();
+  if (!presenceRenderInterval) {
+    presenceRenderInterval = setInterval(renderPeerPresence, 15000);
+  }
   if (pendingInvite) {
     const code = pendingInvite;
     pendingInvite = null;
@@ -332,8 +424,9 @@ function chatDisplayInfo(chat) {
   const other = otherUid && chat.memberProfiles ? chat.memberProfiles[otherUid] : null;
   return {
     name: other ? other.name : "Aguardando alguém…",
-    avatarSrc: other ? avatarUrl(other.avatar) : null,
+    avatarSrc: other ? resolveAvatarSrc(other.avatar) : null,
     isGroup: false,
+    otherUid: otherUid || null,
   };
 }
 
@@ -408,6 +501,11 @@ function closeActiveChat() {
     unsubMessages();
     unsubMessages = null;
   }
+  if (unsubPeerPresence) {
+    unsubPeerPresence();
+    unsubPeerPresence = null;
+  }
+  lastPeerPresence = null;
   emptyState.classList.remove("hidden");
   activeChatEl.classList.add("hidden");
   screenApp.classList.remove("showing-chat");
@@ -437,11 +535,22 @@ function updateActiveChatHeader(chat) {
   }
 
   const memberCount = (chat.memberIds || []).length;
-  chatSubtitleEl.textContent = chat.type === "group" ? `${memberCount} participante${memberCount === 1 ? "" : "s"}` : "conversa individual";
+  if (chat.type === "group") {
+    chatSubtitleEl.textContent = `${memberCount} participante${memberCount === 1 ? "" : "s"}`;
+    btnLeave.textContent = "Sair do grupo";
+    btnLeave.title = "Sair do grupo";
+  } else {
+    btnLeave.textContent = "Apagar contato";
+    btnLeave.title = "Apagar esse contato";
+    if (memberCount < 2) chatSubtitleEl.textContent = "";
+    // com 2 membros, o texto vem da presença (subscribePeerPresence/renderPresence)
+  }
 
   const waitingForPeer = memberCount < 2;
   inviteBanner.classList.toggle("hidden", !waitingForPeer);
   if (waitingForPeer) inviteBannerCode.textContent = chat.inviteCode;
+
+  subscribePeerPresence(chat, info.otherUid);
 }
 
 // ---------- criar / entrar em conversas ----------
@@ -516,15 +625,117 @@ async function handleJoinByCode(rawCode, opts = {}) {
 
 btnLeave.addEventListener("click", async () => {
   if (!activeChatId) return;
-  if (!confirm("Sair desta conversa?")) return;
+  const chat = chats.get(activeChatId);
+  const isGroup = chat && chat.type === "group";
+  const confirmMsg = isGroup ? "Sair deste grupo?" : "Apagar esse contato? A conversa some da sua lista.";
+  if (!confirm(confirmMsg)) return;
   const chatRef = doc(db, "chats", activeChatId);
   try {
     await updateDoc(chatRef, { memberIds: arrayRemove(myUid) });
   } catch (err) {
-    showAppError("Erro ao sair: " + err.message);
+    showAppError("Erro ao remover: " + err.message);
   }
   closeActiveChat();
 });
+
+btnClearChat.addEventListener("click", async () => {
+  if (!activeChatId) return;
+  if (!confirm("Apagar todas as mensagens desta conversa? Isso não pode ser desfeito.")) return;
+  try {
+    await clearChatMessages(activeChatId);
+  } catch (err) {
+    showAppError("Erro ao limpar: " + err.message);
+  }
+});
+
+async function clearChatMessages(chatId) {
+  const snap = await getDocs(collection(db, "chats", chatId, "messages"));
+  if (!snap.empty) {
+    const batch = writeBatch(db);
+    snap.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  await updateDoc(doc(db, "chats", chatId), { lastMessage: null });
+}
+
+async function purgeOldMessages(chatId) {
+  const cutoff = Date.now() - MESSAGE_TTL_MS;
+  const q = query(collection(db, "chats", chatId, "messages"), where("ts", "<", cutoff));
+  const snap = await getDocs(q);
+  if (snap.empty) return;
+  const batch = writeBatch(db);
+  snap.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+  const chat = chats.get(chatId);
+  if (chat && chat.lastMessage && chat.lastMessage.ts < cutoff) {
+    await updateDoc(doc(db, "chats", chatId), { lastMessage: null }).catch(() => {});
+  }
+}
+
+function sweepAllChats() {
+  chats.forEach((chat) => purgeOldMessages(chat.id).catch(() => {}));
+}
+
+function startAutoPurge() {
+  if (autoPurgeInterval) clearInterval(autoPurgeInterval);
+  // pequeno atraso pra dar tempo da lista de conversas (subscribeToChatList) carregar
+  // antes da primeira varredura — senão ela roda com `chats` ainda vazio.
+  setTimeout(sweepAllChats, 3000);
+  autoPurgeInterval = setInterval(sweepAllChats, PURGE_CHECK_INTERVAL_MS);
+}
+
+// ---------- presença (online / inativo / em hibernação) ----------
+
+function presenceRef(uid) {
+  return doc(db, "presence", uid);
+}
+
+function writePresence(state) {
+  if (!myUid) return;
+  setDoc(presenceRef(myUid), { state, lastActiveAt: Date.now() }).catch(() => {});
+}
+
+function startPresenceHeartbeat() {
+  const beat = () => writePresence(document.hasFocus() ? "online" : "inactive");
+  beat();
+  presenceInterval = setInterval(beat, PRESENCE_HEARTBEAT_MS);
+  document.addEventListener("visibilitychange", beat);
+  window.addEventListener("focus", beat);
+  window.addEventListener("blur", beat);
+}
+
+function subscribePeerPresence(chat, otherUid) {
+  if (unsubPeerPresence) {
+    unsubPeerPresence();
+    unsubPeerPresence = null;
+  }
+  lastPeerPresence = null;
+
+  if (!chat || chat.type !== "direct" || !otherUid) return;
+
+  unsubPeerPresence = onSnapshot(presenceRef(otherUid), (snap) => {
+    lastPeerPresence = snap.exists() ? snap.data() : null;
+    renderPeerPresence();
+  });
+}
+
+function renderPeerPresence() {
+  const chat = chats.get(activeChatId);
+  if (!chat || chat.type !== "direct" || (chat.memberIds || []).length < 2) return;
+
+  if (!lastPeerPresence) {
+    chatSubtitleEl.textContent = "em hibernação";
+    return;
+  }
+  const diff = Date.now() - lastPeerPresence.lastActiveAt;
+  if (diff < PRESENCE_ONLINE_WINDOW_MS && lastPeerPresence.state === "online") {
+    chatSubtitleEl.textContent = "online agora";
+  } else if (diff < PRESENCE_INACTIVE_WINDOW_MS) {
+    chatSubtitleEl.textContent = "inativo";
+  } else {
+    chatSubtitleEl.textContent = "em hibernação";
+  }
+}
 
 btnChatInvite.addEventListener("click", async () => {
   const chat = chats.get(activeChatId);
@@ -562,20 +773,39 @@ function subscribeToMessages(chatId) {
   if (unsubMessages) unsubMessages();
   messagesEl.innerHTML = "";
   renderedMessageIds = new Set();
+  messageRows.clear();
 
   const q = query(collection(db, "chats", chatId, "messages"), orderBy("ts"));
   unsubMessages = onSnapshot(
     q,
     (snap) => {
       snap.docChanges().forEach((change) => {
-        if (change.type !== "added") return;
-        if (renderedMessageIds.has(change.doc.id)) return;
-        renderedMessageIds.add(change.doc.id);
-        renderMessage(change.doc.data());
+        const data = change.doc.data();
+        if (change.type === "added") {
+          if (renderedMessageIds.has(change.doc.id)) return;
+          renderedMessageIds.add(change.doc.id);
+          renderMessage(change.doc.id, data);
+          markAsReadIfNeeded(chatId, change.doc.id, data);
+        } else if (change.type === "modified") {
+          updateMessageTicks(change.doc.id, data);
+        } else if (change.type === "removed") {
+          const entry = messageRows.get(change.doc.id);
+          if (entry) entry.row.remove();
+          messageRows.delete(change.doc.id);
+          renderedMessageIds.delete(change.doc.id);
+        }
       });
     },
     (err) => showAppError("Erro nas mensagens: " + err.message)
   );
+}
+
+function markAsReadIfNeeded(chatId, messageId, data) {
+  if (data.senderId === myUid) return;
+  if ((data.readBy || []).includes(myUid)) return;
+  updateDoc(doc(db, "chats", chatId, "messages", messageId), {
+    readBy: arrayUnion(myUid),
+  }).catch(() => {});
 }
 
 function formatTime(ts) {
@@ -583,18 +813,18 @@ function formatTime(ts) {
   return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
 
-function renderMessage(data) {
+function isReadByOthers(chat, readBy) {
+  if (!chat || !readBy) return false;
+  const others = (chat.memberIds || []).filter((id) => id !== myUid);
+  return others.some((id) => readBy.includes(id));
+}
+
+function renderMessage(id, data) {
   const isMe = data.senderId === myUid;
   const chat = chats.get(activeChatId);
 
   const row = document.createElement("div");
   row.className = "message-row " + (isMe ? "row-me" : "row-them");
-
-  const avatar = document.createElement("img");
-  avatar.className = "msg-avatar";
-  avatar.alt = "";
-  avatar.src = avatarUrl(data.senderAvatar);
-  row.appendChild(avatar);
 
   const col = document.createElement("div");
   col.className = "bubble-col";
@@ -618,10 +848,30 @@ function renderMessage(data) {
   time.textContent = formatTime(data.ts);
   bubble.appendChild(time);
 
+  let ticksEl = null;
+  if (isMe) {
+    ticksEl = document.createElement("span");
+    ticksEl.className = "msg-ticks";
+    ticksEl.textContent = "✓✓";
+    if (isReadByOthers(chat, data.readBy)) ticksEl.classList.add("read");
+    time.appendChild(ticksEl);
+  }
+
   col.appendChild(bubble);
   row.appendChild(col);
   messagesEl.appendChild(row);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  messageRows.set(id, { row, ticksEl, data });
+}
+
+function updateMessageTicks(id, data) {
+  const entry = messageRows.get(id);
+  if (!entry) return;
+  entry.data = data;
+  if (!entry.ticksEl) return;
+  const chat = chats.get(activeChatId);
+  entry.ticksEl.classList.toggle("read", isReadByOthers(chat, data.readBy));
 }
 
 messageForm.addEventListener("submit", async (e) => {
@@ -636,9 +886,9 @@ messageForm.addEventListener("submit", async (e) => {
     await addDoc(collection(chatRef, "messages"), {
       senderId: myUid,
       senderName: myProfile.name,
-      senderAvatar: myProfile.avatar,
       text,
       ts,
+      readBy: [],
     });
     await updateDoc(chatRef, { lastMessage: { text, senderName: myProfile.name, ts } });
   } catch (err) {

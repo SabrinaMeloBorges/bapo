@@ -34,7 +34,10 @@
 
       <div class="card">
         <p class="card-title">Escolha um avatar</p>
-        <div id="avatar-grid" class="avatar-grid"></div>
+        <div id="avatar-grid" class="avatar-grid">
+          <button id="btn-avatar-upload" type="button" class="avatar-option avatar-upload-tile" title="Enviar uma foto do computador"><span>+</span></button>
+        </div>
+        <input id="avatar-file-input" type="file" accept="image/*" class="hidden" />
 
         <label for="profile-name" class="small-label profile-name-label">Seu nome</label>
         <input id="profile-name" type="text" placeholder="Como quer ser chamado?" maxlength="20" />
@@ -80,6 +83,7 @@
               </div>
             </div>
             <button id="btn-chat-invite" class="btn-ghost" type="button" title="Convidar alguém">Convidar</button>
+            <button id="btn-clear-chat" class="btn-ghost" type="button" title="Apagar as mensagens desta conversa">Limpar chat</button>
             <button id="btn-leave" class="btn-ghost" type="button" title="Sair da conversa">Sair</button>
           </header>
 
@@ -97,10 +101,11 @@
         </div>
       </div>
 
-      <p id="app-error" class="error hidden" role="alert"></p>
     </section>
 
   </main>
+
+  <p id="app-error" class="error hidden" role="alert"></p>
 
   <!-- Modal: nova conversa / grupo / entrar com código -->
   <div id="new-chat-modal" class="modal-overlay hidden">
