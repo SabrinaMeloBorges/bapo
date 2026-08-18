@@ -29,9 +29,30 @@
       <button type="button" data-theme-choice="system">Sistema</button>
     </div>
 
+    <p class="settings-title">Notificações</p>
+    <label class="notif-row">
+      <input type="checkbox" id="notif-toast" />
+      <span>Aviso no canto da tela</span>
+    </label>
+    <label class="notif-row">
+      <input type="checkbox" id="notif-sound" />
+      <span>Som</span>
+    </label>
+    <select id="notif-sound-type" class="notif-sound-select">
+      <option value="ding">Som: Ding</option>
+      <option value="soft">Som: Suave</option>
+      <option value="alert">Som: Alerta</option>
+    </select>
+    <label class="notif-row">
+      <input type="checkbox" id="notif-browser" />
+      <span>Notificação do navegador</span>
+    </label>
+
     <button id="btn-link-google" class="btn btn-secondary settings-link-google hidden" type="button">Vincular conta Google (não perder mensagens)</button>
     <button id="btn-logout" class="btn-link-small settings-logout hidden" type="button">Sair da conta</button>
   </div>
+
+  <div id="toast-container" class="toast-container"></div>
 
   <main class="app">
 

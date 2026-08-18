@@ -330,6 +330,12 @@ const settingsPanel = el("settings-panel");
 const colorSwatches = el("color-swatches");
 const themeToggle = el("theme-toggle");
 
+const notifToastCheckbox = el("notif-toast");
+const notifSoundCheckbox = el("notif-sound");
+const notifSoundTypeSelect = el("notif-sound-type");
+const notifBrowserCheckbox = el("notif-browser");
+const toastContainer = el("toast-container");
+
 // ---------- estado ----------
 
 let myProfile = null;
@@ -685,6 +691,9 @@ async function enterApp() {
   }
 }
 
+const lastSeenMsgTs = new Map(); // chatId -> ts do último lastMessage já visto/notificado
+let chatListBooted = false;
+
 function subscribeToChatList() {
   if (unsubChatList) unsubChatList();
   const q = query(collection(db, "chats"), where("memberIds", "array-contains", myUid));
@@ -693,6 +702,20 @@ function subscribeToChatList() {
     (snap) => {
       chats.clear();
       snap.forEach((d) => chats.set(d.id, { id: d.id, ...d.data() }));
+
+      if (!chatListBooted) {
+        // primeira carga: só estabelece a linha de base, não notifica nada retroativo
+        chats.forEach((c) => lastSeenMsgTs.set(c.id, c.lastMessage ? c.lastMessage.ts : 0));
+        chatListBooted = true;
+      } else {
+        chats.forEach((c) => {
+          const prevTs = lastSeenMsgTs.get(c.id) || 0;
+          const newTs = c.lastMessage ? c.lastMessage.ts : 0;
+          if (newTs > prevTs) maybeNotify(c);
+          lastSeenMsgTs.set(c.id, newTs);
+        });
+      }
+
       renderChatList();
       if (activeChatId) updateActiveChatHeader(chats.get(activeChatId));
     },
@@ -1284,7 +1307,7 @@ messageForm.addEventListener("submit", async (e) => {
       readBy: [],
       readAt: {},
     });
-    await updateDoc(chatRef, { lastMessage: { ciphertext, iv, senderName: myProfile.name, ts } });
+    await updateDoc(chatRef, { lastMessage: { ciphertext, iv, senderName: myProfile.name, senderId: myUid, ts } });
   } catch (err) {
     showAppError("Não foi possível enviar: " + err.message);
   }
@@ -1461,5 +1484,154 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// ---------- notificações (som / aviso na tela / notificação do navegador) ----------
+
+function getNotifSetting(key) {
+  const stored = localStorage.getItem("bapo-notif-" + key);
+  if (stored === null) return key !== "browser"; // padrão: aviso+som ligados, navegador desligado (exige permissão)
+  return stored === "true";
+}
+
+function setNotifSetting(key, value) {
+  try {
+    localStorage.setItem("bapo-notif-" + key, String(value));
+  } catch (e) {}
+}
+
+function getNotifSoundType() {
+  return localStorage.getItem("bapo-notif-sound-type") || "ding";
+}
+
+function playNotificationSound(type) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const now = ctx.currentTime;
+    const sequences = {
+      ding: [880, 1320],
+      soft: [520],
+      alert: [660, 440, 660],
+    };
+    const seq = sequences[type] || sequences.ding;
+    seq.forEach((freq, i) => {
+      const t0 = now + i * 0.12;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.18, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.16);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.17);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 600);
+  } catch (e) {}
+}
+
+async function ensureNotificationPermission() {
+  if (!("Notification" in window)) return "unsupported";
+  if (Notification.permission === "granted" || Notification.permission === "denied") {
+    return Notification.permission;
+  }
+  try {
+    return await Notification.requestPermission();
+  } catch (e) {
+    return "denied";
+  }
+}
+
+function showBrowserNotification(title, body, iconSrc) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const n = new Notification(title, { body, icon: iconSrc || "icons/icon-192.png", tag: "bapo-msg" });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+    };
+  } catch (e) {}
+}
+
+function showToast(chat, title, body, avatarSrc) {
+  const toast = document.createElement("div");
+  toast.className = "toast";
+
+  const avatar = document.createElement("img");
+  avatar.className = "toast-avatar";
+  avatar.alt = "";
+  if (avatarSrc) avatar.src = avatarSrc;
+  toast.appendChild(avatar);
+
+  const col = document.createElement("div");
+  col.className = "toast-col";
+  const t = document.createElement("p");
+  t.className = "toast-title";
+  t.textContent = title;
+  const b = document.createElement("p");
+  b.className = "toast-body";
+  b.textContent = body;
+  col.appendChild(t);
+  col.appendChild(b);
+  toast.appendChild(col);
+
+  toast.addEventListener("click", () => {
+    openChat(chat.id);
+    toast.remove();
+  });
+
+  toastContainer.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+async function maybeNotify(chat) {
+  if (!chat.lastMessage || !chat.lastMessage.senderId) return;
+  if (chat.lastMessage.senderId === myUid) return;
+  if (chat.id === activeChatId && document.hasFocus()) return; // já está vendo essa conversa
+
+  const info = chatDisplayInfo(chat);
+  const bodyText = await decryptPreview(chat, chat.lastMessage);
+
+  if (getNotifSetting("toast")) showToast(chat, info.name, bodyText, info.avatarSrc);
+  if (getNotifSetting("sound")) playNotificationSound(getNotifSoundType());
+  if (getNotifSetting("browser") && document.visibilityState !== "visible") {
+    showBrowserNotification(info.name, bodyText, info.avatarSrc);
+  }
+}
+
+function initNotifSettings() {
+  notifToastCheckbox.checked = getNotifSetting("toast");
+  notifSoundCheckbox.checked = getNotifSetting("sound");
+  notifSoundTypeSelect.value = getNotifSoundType();
+  notifBrowserCheckbox.checked = getNotifSetting("browser") && "Notification" in window && Notification.permission === "granted";
+
+  notifToastCheckbox.addEventListener("change", () => setNotifSetting("toast", notifToastCheckbox.checked));
+
+  notifSoundCheckbox.addEventListener("change", () => {
+    setNotifSetting("sound", notifSoundCheckbox.checked);
+    if (notifSoundCheckbox.checked) playNotificationSound(getNotifSoundType());
+  });
+
+  notifSoundTypeSelect.addEventListener("change", () => {
+    localStorage.setItem("bapo-notif-sound-type", notifSoundTypeSelect.value);
+    playNotificationSound(notifSoundTypeSelect.value);
+  });
+
+  notifBrowserCheckbox.addEventListener("change", async () => {
+    if (!notifBrowserCheckbox.checked) {
+      setNotifSetting("browser", false);
+      return;
+    }
+    const perm = await ensureNotificationPermission();
+    if (perm !== "granted") {
+      notifBrowserCheckbox.checked = false;
+      window.alert(perm === "unsupported" ? "Seu navegador não suporta notificações." : "Permissão de notificação negada. Ative nas configurações do navegador se quiser usar essa opção.");
+      return;
+    }
+    setNotifSetting("browser", true);
+  });
+}
+
 buildColorSwatches();
 applyAppearance();
+initNotifSettings();
