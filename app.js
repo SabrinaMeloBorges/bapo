@@ -210,6 +210,8 @@ function myMemberProfile() {
 // ---------- elementos ----------
 
 const screenAuth = el("screen-auth");
+const btnToggleEmailAuth = el("btn-toggle-email-auth");
+const emailAuthFields = el("email-auth-fields");
 const authEmailInput = el("auth-email");
 const authPasswordInput = el("auth-password");
 const btnAuthLogin = el("btn-auth-login");
@@ -251,6 +253,9 @@ const participantsModal = el("participants-modal");
 const participantsList = el("participants-list");
 const btnCloseParticipants = el("btn-close-participants");
 const btnChatInvite = el("btn-chat-invite");
+const btnToggleEphemeral = el("btn-toggle-ephemeral");
+const ephemeralStateEl = el("ephemeral-state");
+const ephemeralIcon = el("ephemeral-icon");
 const btnClearChat = el("btn-clear-chat");
 const btnLeave = el("btn-leave");
 const inviteBanner = el("invite-banner");
@@ -358,6 +363,13 @@ function showAuthError(msg) {
   authError.textContent = msg;
   authError.classList.remove("hidden");
 }
+
+btnToggleEmailAuth.addEventListener("click", () => {
+  const showing = !emailAuthFields.classList.contains("hidden");
+  emailAuthFields.classList.toggle("hidden", showing);
+  btnToggleEmailAuth.textContent = showing ? "Continuar com e-mail" : "‹ Voltar";
+  if (!showing) authEmailInput.focus();
+});
 
 btnAuthLogin.addEventListener("click", async () => {
   authError.classList.add("hidden");
@@ -955,6 +967,9 @@ function updateActiveChatHeader(chat) {
   messageInput.disabled = waitingForPeer;
   btnSend.disabled = waitingForPeer;
 
+  ephemeralStateEl.textContent = chat.ephemeral ? "ativadas" : "desativadas";
+  ephemeralIcon.classList.toggle("hidden", !chat.ephemeral);
+
   subscribePeerPresence(chat, info.otherUid);
   renderPeerPresence();
 }
@@ -971,6 +986,7 @@ async function createDirectChat() {
     icon: null,
     inviteCode: code,
     encKeyRaw,
+    ephemeral: false,
     memberIds: [myUid],
     memberProfiles: { [myUid]: myMemberProfile() },
     createdAt: Date.now(),
@@ -990,6 +1006,7 @@ async function createGroupChat(name, icon) {
     icon,
     inviteCode: code,
     encKeyRaw,
+    ephemeral: false,
     memberIds: [myUid],
     memberProfiles: { [myUid]: myMemberProfile() },
     createdAt: Date.now(),
@@ -1058,6 +1075,19 @@ btnClearChat.addEventListener("click", async () => {
   }
 });
 
+btnToggleEphemeral.addEventListener("click", async () => {
+  if (!activeChatId) return;
+  const chat = chats.get(activeChatId);
+  if (!chat) return;
+  const next = !chat.ephemeral;
+  if (next && !confirm("Ativar mensagens temporárias? Mensagens com mais de 30 minutos vão ser apagadas automaticamente nesta conversa.")) return;
+  try {
+    await updateDoc(doc(db, "chats", activeChatId), { ephemeral: next });
+  } catch (err) {
+    showAppError("Erro ao alterar: " + err.message);
+  }
+});
+
 async function clearChatMessages(chatId) {
   const snap = await getDocs(collection(db, "chats", chatId, "messages"));
   if (!snap.empty) {
@@ -1083,7 +1113,12 @@ async function purgeOldMessages(chatId) {
 }
 
 function sweepAllChats() {
-  chats.forEach((chat) => purgeOldMessages(chat.id).catch(() => {}));
+  // limpeza automática só roda nas conversas em que "mensagens temporárias"
+  // foi ativado explicitamente — por padrão fica desligado, pra não sumir
+  // mensagem de ninguém sem querer.
+  chats.forEach((chat) => {
+    if (chat.ephemeral) purgeOldMessages(chat.id).catch(() => {});
+  });
 }
 
 function startAutoPurge() {
@@ -1235,7 +1270,7 @@ document.addEventListener("click", (e) => {
   chatMenu.classList.add("hidden");
 });
 
-[btnParticipants, btnChatInvite, btnClearChat, btnLeave].forEach((b) => {
+[btnParticipants, btnChatInvite, btnToggleEphemeral, btnClearChat, btnLeave].forEach((b) => {
   b.addEventListener("click", () => chatMenu.classList.add("hidden"));
 });
 

@@ -60,24 +60,28 @@
     <section id="screen-auth" class="screen hidden">
       <header class="brand">
         <h1>bapo</h1>
-        <p class="tagline">entre com e-mail pra usar seus contatos em qualquer aparelho.</p>
+        <p class="tagline">entre pra usar seus contatos em qualquer aparelho.</p>
       </header>
 
-      <div class="card">
-        <label for="auth-email" class="small-label">E-mail</label>
-        <input id="auth-email" type="email" placeholder="voce@email.com" autocomplete="email" />
+      <div class="card auth-card">
+        <button id="btn-auth-google" class="btn btn-google" type="button">Entrar com Google</button>
 
-        <label for="auth-password" class="small-label" style="margin-top:12px;">Senha</label>
-        <input id="auth-password" type="password" placeholder="Pelo menos 6 caracteres" autocomplete="current-password" />
+        <button id="btn-toggle-email-auth" class="btn btn-secondary" type="button">Continuar com e-mail</button>
 
-        <button id="btn-auth-login" class="btn btn-primary" type="button" style="margin-top:16px;">Entrar</button>
-        <button id="btn-auth-signup" class="btn btn-secondary" type="button" style="margin-top:8px;width:100%;">Criar conta</button>
+        <div id="email-auth-fields" class="email-auth-fields hidden">
+          <label for="auth-email" class="small-label">E-mail</label>
+          <input id="auth-email" type="email" placeholder="voce@email.com" autocomplete="email" />
+
+          <label for="auth-password" class="small-label">Senha</label>
+          <input id="auth-password" type="password" placeholder="Pelo menos 6 caracteres" autocomplete="current-password" />
+
+          <div class="auth-btn-row">
+            <button id="btn-auth-login" class="btn btn-primary" type="button">Entrar</button>
+            <button id="btn-auth-signup" class="btn btn-outline" type="button">Criar conta</button>
+          </div>
+        </div>
 
         <p id="auth-error" class="error hidden" role="alert"></p>
-
-        <div class="divider"><span>ou</span></div>
-
-        <button id="btn-auth-google" class="btn btn-secondary" type="button">Entrar com Google</button>
 
         <div class="divider"><span>ou</span></div>
 
@@ -86,7 +90,7 @@
     </section>
 
     <!-- TELA 0: perfil -->
-    <section id="screen-profile" class="screen">
+    <section id="screen-profile" class="screen hidden">
       <header class="brand">
         <h1>bapo</h1>
         <p class="tagline">antes de começar, diga como quer aparecer.</p>
@@ -148,6 +152,7 @@
               <div id="chat-menu" class="chat-menu hidden">
                 <button id="btn-participants" type="button" class="chat-menu-item hidden">Ver participantes</button>
                 <button id="btn-chat-invite" type="button" class="chat-menu-item">Convidar</button>
+                <button id="btn-toggle-ephemeral" type="button" class="chat-menu-item">Mensagens temporárias: <span id="ephemeral-state">desativadas</span></button>
                 <button id="btn-clear-chat" type="button" class="chat-menu-item">Limpar chat</button>
                 <button id="btn-leave" type="button" class="chat-menu-item danger">Sair</button>
               </div>
@@ -171,6 +176,7 @@
 
           <form id="message-form" class="message-form" autocomplete="off">
             <span class="lock-icon" title="Mensagens protegidas por criptografia">🔒</span>
+            <span id="ephemeral-icon" class="lock-icon hidden" title="Mensagens temporárias ativadas: somem depois de 30 minutos">⏱️</span>
             <input id="message-input" type="text" placeholder="Escreva uma mensagem…" maxlength="1000" disabled />
             <button id="btn-send" class="btn btn-primary btn-send" type="submit" disabled>Enviar</button>
           </form>

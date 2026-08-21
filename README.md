@@ -9,7 +9,7 @@ Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 - Várias conversas ficam abertas ao mesmo tempo na barra lateral — dá pra trocar entre elas sem perder nada.
 - **Mensagens são cifradas no navegador antes de ir pro servidor** (Web Crypto API, AES-256-GCM). O Firestore só armazena texto cifrado.
 - Confirmação de leitura (✓✓, fica azul quando a outra pessoa lê, com horário) e status de presença (online agora / inativo / em hibernação) em conversas individuais.
-- Botão "Limpar chat" e limpeza automática de mensagens com mais de 30 minutos.
+- Botão "Limpar chat" (apaga tudo na hora) e, opcionalmente, "mensagens temporárias" por conversa — quando ativado no menu "⋮" daquela conversa, mensagens com mais de 30 minutos somem sozinhas. Vem desligado por padrão em toda conversa nova.
 - Instalável como app (PWA) — funciona com ícone na tela inicial e abre em janela própria.
 - Cor do tema e modo claro/escuro/sistema são configuráveis pelo ícone de engrenagem.
 

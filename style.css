@@ -78,7 +78,9 @@ body {
 }
 
 #screen-profile .brand,
-#screen-profile > .card {
+#screen-profile > .card,
+#screen-auth .brand,
+#screen-auth > .card {
   width: 100%;
   max-width: 440px;
   margin-left: auto;
@@ -226,7 +228,59 @@ body {
   padding: 8px;
 }
 
-input[type="text"] {
+.btn-outline {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+}
+
+.btn-outline:hover {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+/* --- login --- */
+
+.auth-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-card .divider {
+  margin: 4px 0;
+}
+
+.btn-google {
+  background: #ffffff;
+  color: #1f1f1f;
+  border: 1px solid #d5d7db;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+}
+
+.btn-google:hover {
+  background: #f7f7f8;
+}
+
+.email-auth-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.auth-btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.auth-btn-row .btn {
+  width: auto;
+  flex: 1;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"] {
   font-family: inherit;
   font-size: 0.95rem;
   padding: 11px 14px;
@@ -239,7 +293,9 @@ input[type="text"] {
   transition: border-color 0.15s ease;
 }
 
-input[type="text"]:focus {
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus {
   border-color: var(--primary);
 }
 
@@ -595,16 +651,22 @@ input[type="text"]:focus {
 .messages {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
+.message-row {
+  min-width: 0;
+}
+
 .bubble-col {
   display: flex;
   flex-direction: column;
   max-width: 78%;
+  min-width: 0;
 }
 
 .msg-sender-name {
@@ -619,8 +681,10 @@ input[type="text"]:focus {
   border-radius: 16px;
   font-size: 0.94rem;
   line-height: 1.35;
-  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   white-space: pre-wrap;
+  min-width: 0;
 }
 
 .bubble-me {
@@ -1344,4 +1408,40 @@ input[type="text"]:focus {
     padding: 7px 10px;
     font-size: 0.78rem;
   }
+}
+
+/* --- barra de rolagem fina e discreta (em vez da padrão do navegador) --- */
+
+.messages,
+.chat-list,
+.participants-list {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 40%, transparent) transparent;
+}
+
+.messages::-webkit-scrollbar,
+.chat-list::-webkit-scrollbar,
+.participants-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.messages::-webkit-scrollbar-track,
+.chat-list::-webkit-scrollbar-track,
+.participants-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.messages::-webkit-scrollbar-thumb,
+.chat-list::-webkit-scrollbar-thumb,
+.participants-list::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--muted) 40%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.messages::-webkit-scrollbar-thumb:hover,
+.chat-list::-webkit-scrollbar-thumb:hover,
+.participants-list::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--muted) 65%, transparent);
 }
