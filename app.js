@@ -33,7 +33,7 @@ import {
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 import { firebaseConfig, USE_EMULATOR } from "./firebase-config.js";
-import { TENOR_API_KEY } from "./gif-config.js";
+import { GIPHY_API_KEY } from "./gif-config.js";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem O/0/I/1 pra evitar confusão
 
@@ -1718,22 +1718,22 @@ attachTabs.addEventListener("click", (e) => {
   if (btn.dataset.tab === "gifs" && !gifResults.children.length) searchGifs("");
 });
 
-const TENOR_CONFIGURED = TENOR_API_KEY && TENOR_API_KEY !== "SUBSTITUA_AQUI";
-if (!TENOR_CONFIGURED) gifHint.classList.remove("hidden");
+const GIPHY_CONFIGURED = GIPHY_API_KEY && GIPHY_API_KEY !== "SUBSTITUA_AQUI";
+if (!GIPHY_CONFIGURED) gifHint.classList.remove("hidden");
 
 async function searchGifs(query) {
-  if (!TENOR_CONFIGURED) return;
+  if (!GIPHY_CONFIGURED) return;
   gifResults.innerHTML = "";
   try {
     const endpoint = query
-      ? `https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query)}&key=${TENOR_API_KEY}&client_key=bapo&limit=24&media_filter=tinygif,gif`
-      : `https://tenor.googleapis.com/v2/featured?key=${TENOR_API_KEY}&client_key=bapo&limit=24&media_filter=tinygif,gif`;
+      ? `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(query)}&limit=24&rating=g`
+      : `https://api.giphy.com/v1/gifs/trending?api_key=${GIPHY_API_KEY}&limit=24&rating=g`;
     const res = await fetch(endpoint);
     const data = await res.json();
-    (data.results || []).forEach((gif) => {
-      const formats = gif.media_formats || {};
-      const previewUrl = (formats.tinygif || formats.gif || {}).url;
-      const fullUrl = (formats.gif || formats.tinygif || {}).url;
+    (data.data || []).forEach((gif) => {
+      const images = gif.images || {};
+      const previewUrl = (images.fixed_height_small || images.fixed_width_small || {}).url;
+      const fullUrl = (images.fixed_height || images.downsized || images.original || {}).url;
       if (!previewUrl || !fullUrl) return;
 
       const item = document.createElement("button");

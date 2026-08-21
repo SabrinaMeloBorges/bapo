@@ -13,7 +13,7 @@ Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 - Instalável como app (PWA) — funciona com ícone na tela inicial e abre em janela própria.
 - Cor do tema e modo claro/escuro/sistema são configuráveis pelo ícone de engrenagem.
 - **Figurinhas**: envie uma imagem do computador (botão 🖼️ ao lado do campo de mensagem) e ela vira uma figurinha reutilizável, salva na sua coleção (sincronizada entre aparelhos se você entrar com e-mail/Google). Fundo transparente preservado (PNG).
-- **GIFs**: busca de GIFs da internet direto no mesmo painel (aba "GIFs"), usando a API gratuita do Tenor — exige configurar uma chave própria em `gif-config.js` (veja abaixo).
+- **GIFs**: busca de GIFs da internet direto no mesmo painel (aba "GIFs"), usando a API gratuita do GIPHY — exige configurar uma chave própria em `gif-config.js` (veja abaixo).
 
 ### Sobre a criptografia — o que ela cobre e o que não cobre
 
@@ -58,7 +58,7 @@ Não há build — é só HTML, CSS e JS puro (o Firebase é carregado via CDN c
 
 Sem isso, a aba de GIFs mostra um aviso e as figurinhas continuam funcionando normalmente.
 
-1. Acesse [console.cloud.google.com](https://console.cloud.google.com), crie ou escolha um projeto.
-2. Em "APIs e serviços" → "Biblioteca", procure **Tenor API** e ative.
-3. Em "APIs e serviços" → "Credenciais" → "Criar credenciais" → "Chave de API".
-4. Cole a chave em `TENOR_API_KEY`, no arquivo `gif-config.js`.
+1. Acesse [developers.giphy.com](https://developers.giphy.com) e crie uma conta grátis.
+2. No painel, clique em "Create an App" → escolha "API" (não "SDK") → dê um nome qualquer.
+3. Copie a chave que aparece em "API Key".
+4. Cole a chave em `GIPHY_API_KEY`, no arquivo `gif-config.js`.
