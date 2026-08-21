@@ -5,6 +5,7 @@ const SHELL_FILES = [
   "./style.css",
   "./app.js",
   "./firebase-config.js",
+  "./gif-config.js",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

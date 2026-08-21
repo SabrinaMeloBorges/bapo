@@ -174,7 +174,28 @@
             <button id="btn-cancel-reply" type="button" title="Cancelar resposta">✕</button>
           </div>
 
+          <div id="attach-panel" class="attach-panel hidden">
+            <div class="modal-tabs" id="attach-tabs">
+              <button type="button" class="tab active" data-tab="stickers">Figurinhas</button>
+              <button type="button" class="tab" data-tab="gifs">GIFs</button>
+            </div>
+
+            <div id="tab-stickers" class="tab-panel">
+              <div id="sticker-grid" class="sticker-grid">
+                <button id="btn-add-sticker" type="button" class="sticker-add-tile" title="Adicionar figurinha do computador">+</button>
+              </div>
+              <input id="sticker-file-input" type="file" accept="image/*" class="hidden" />
+            </div>
+
+            <div id="tab-gifs" class="tab-panel hidden">
+              <input id="gif-search-input" type="text" placeholder="Buscar GIFs…" />
+              <div id="gif-results" class="gif-grid"></div>
+              <p id="gif-hint" class="muted small hidden">Configure uma chave gratuita da API do Tenor em gif-config.js pra ativar a busca de GIFs.</p>
+            </div>
+          </div>
+
           <form id="message-form" class="message-form" autocomplete="off">
+            <button id="btn-attach" type="button" class="btn-icon attach-btn" title="Figurinhas e GIFs" aria-label="Figurinhas e GIFs">🖼️</button>
             <span class="lock-icon" title="Mensagens protegidas por criptografia">🔒</span>
             <span id="ephemeral-icon" class="lock-icon hidden" title="Mensagens temporárias ativadas: somem depois de 30 minutos">⏱️</span>
             <input id="message-input" type="text" placeholder="Escreva uma mensagem…" maxlength="1000" disabled />

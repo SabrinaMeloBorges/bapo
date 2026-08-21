@@ -42,5 +42,11 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if request.auth != null && request.auth.uid == uid;
     }
+
+    // Figurinhas próprias, sincronizadas entre aparelhos (só quem entra com e-mail).
+    match /stickers/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
   }
 }

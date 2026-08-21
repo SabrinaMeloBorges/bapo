@@ -33,6 +33,7 @@ import {
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 import { firebaseConfig, USE_EMULATOR } from "./firebase-config.js";
+import { TENOR_API_KEY } from "./gif-config.js";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem O/0/I/1 pra evitar confusão
 
@@ -108,6 +109,40 @@ function resizeImageFile(file, size = 128, quality = 0.72) {
         const h = img.height * scale;
         ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
         resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Não foi possível ler essa imagem."));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
+    reader.readAsDataURL(file);
+  });
+}
+
+const STICKER_MAX_SIZE = 200; // px, mantém o arquivo pequeno o bastante pra caber num documento do Firestore
+const STICKER_MAX_BYTES = 700 * 1024; // limite de segurança bem abaixo de 1 MiB (limite de um documento)
+
+// Diferente da foto de perfil (recortada em quadrado, JPEG): figurinha
+// preserva a proporção original e o fundo transparente (PNG), sem recortar.
+function resizeStickerFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, STICKER_MAX_SIZE / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL("image/png");
+        if (dataUrl.length > STICKER_MAX_BYTES) {
+          reject(new Error("Essa imagem ficou grande demais mesmo depois de reduzida. Tente uma mais simples."));
+          return;
+        }
+        resolve(dataUrl);
       };
       img.onerror = () => reject(new Error("Não foi possível ler essa imagem."));
       img.src = reader.result;
@@ -193,6 +228,8 @@ async function decryptText(key, ciphertext, iv) {
 async function decryptPreview(chat, lastMessage) {
   if (!lastMessage) return "Nenhuma mensagem ainda";
   const prefix = lastMessage.senderName ? lastMessage.senderName + ": " : "";
+  if (lastMessage.kind === "sticker") return prefix + "🖼️ Figurinha";
+  if (lastMessage.kind === "gif") return prefix + "GIF";
   const key = await getChatKey(chat);
   if (!key) return prefix + "🔒";
   try {
@@ -271,6 +308,18 @@ const replyPreviewName = el("reply-preview-name");
 const replyPreviewBody = el("reply-preview-body");
 const btnCancelReply = el("btn-cancel-reply");
 
+const btnAttach = el("btn-attach");
+const attachPanel = el("attach-panel");
+const attachTabs = el("attach-tabs");
+const tabStickersPanel = el("tab-stickers");
+const tabGifsPanel = el("tab-gifs");
+const stickerGrid = el("sticker-grid");
+const btnAddSticker = el("btn-add-sticker");
+const stickerFileInput = el("sticker-file-input");
+const gifSearchInput = el("gif-search-input");
+const gifResults = el("gif-results");
+const gifHint = el("gif-hint");
+
 const appError = el("app-error");
 
 const modalOverlay = el("new-chat-modal");
@@ -306,6 +355,8 @@ let myUid = null;
 let pendingInvite = null;
 let selectedAvatarSeed = AVATAR_SEEDS[0];
 let selectedGroupIcon = GROUP_ICON_SEEDS[0];
+let myStickers = [];
+let gifSearchDebounce = null;
 
 const chats = new Map();
 let activeChatId = null;
@@ -559,6 +610,90 @@ async function saveProfile(profile) {
   }
 }
 
+// ---------- figurinhas próprias ----------
+
+async function loadStickers() {
+  if (auth.currentUser && !auth.currentUser.isAnonymous) {
+    try {
+      const snap = await getDoc(doc(db, "stickers", myUid));
+      if (snap.exists() && Array.isArray(snap.data().list)) return snap.data().list;
+    } catch (e) {}
+    return [];
+  }
+  try {
+    const raw = localStorage.getItem("bapo-stickers");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {}
+  return [];
+}
+
+async function saveStickers(list) {
+  myStickers = list;
+  try {
+    localStorage.setItem("bapo-stickers", JSON.stringify(list));
+  } catch (e) {}
+  if (auth.currentUser && !auth.currentUser.isAnonymous) {
+    try {
+      await setDoc(doc(db, "stickers", myUid), { list });
+    } catch (e) {}
+  }
+}
+
+function renderStickerGrid() {
+  [...stickerGrid.querySelectorAll(".sticker-thumb")].forEach((el) => el.remove());
+  myStickers.forEach((dataUrl, index) => {
+    const thumb = document.createElement("button");
+    thumb.type = "button";
+    thumb.className = "sticker-thumb";
+    thumb.title = "Enviar figurinha";
+
+    const img = document.createElement("img");
+    img.src = dataUrl;
+    img.alt = "";
+    thumb.appendChild(img);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn-remove-sticker";
+    removeBtn.title = "Remover figurinha";
+    removeBtn.textContent = "✕";
+    removeBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const updated = myStickers.filter((_, i) => i !== index);
+      await saveStickers(updated);
+      renderStickerGrid();
+    });
+    thumb.appendChild(removeBtn);
+
+    thumb.addEventListener("click", async () => {
+      attachPanel.classList.add("hidden");
+      await sendChatMessage(dataUrl, "sticker");
+    });
+
+    stickerGrid.insertBefore(thumb, btnAddSticker);
+  });
+}
+
+btnAddSticker.addEventListener("click", () => stickerFileInput.click());
+
+stickerFileInput.addEventListener("change", async () => {
+  const file = stickerFileInput.files[0];
+  stickerFileInput.value = "";
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    window.alert("Escolha um arquivo de imagem.");
+    return;
+  }
+  try {
+    const dataUrl = await resizeStickerFile(file);
+    await saveStickers([...myStickers, dataUrl]);
+    renderStickerGrid();
+  } catch (err) {
+    window.alert(err.message);
+  }
+});
+
 function buildAvatarGrid() {
   avatarGrid.innerHTML = "";
   AVATAR_SEEDS.forEach((seed) => {
@@ -754,6 +889,10 @@ async function enterApp() {
   subscribeToChatList();
   startPresenceHeartbeat();
   startAutoPurge();
+  loadStickers().then((list) => {
+    myStickers = list;
+    renderStickerGrid();
+  });
   if (!presenceRenderInterval) {
     // roda rápido (é só cálculo local) pra "digitando…" sumir sem demora perceptível
     presenceRenderInterval = setInterval(renderPeerPresence, 1500);
@@ -893,6 +1032,7 @@ function markChatAsRead(chatId, chat) {
 function openChat(chatId) {
   activeChatId = chatId;
   chatMenu.classList.add("hidden");
+  attachPanel.classList.add("hidden");
   emptyState.classList.add("hidden");
   activeChatEl.classList.remove("hidden");
   screenApp.classList.add("showing-chat");
@@ -1407,6 +1547,7 @@ function readTooltip(chat, readAt) {
 async function renderMessage(id, data) {
   const isMe = data.senderId === myUid;
   const chat = chats.get(activeChatId);
+  const kind = data.kind || "text";
 
   const row = document.createElement("div");
   row.className = "message-row " + (isMe ? "row-me" : "row-them");
@@ -1442,15 +1583,28 @@ async function renderMessage(id, data) {
     bubble.appendChild(quote);
   }
 
-  const text = await decryptMessageText(chat, data);
-  decryptedTextCache.set(id, text);
+  const content = await decryptMessageText(chat, data);
+  const isValidMediaSrc = (kind === "sticker" || kind === "gif") && (content.startsWith("data:image") || content.startsWith("http"));
+  let quoteLabel = content;
 
-  const textNode = document.createElement("span");
-  textNode.textContent = text;
-  bubble.appendChild(textNode);
+  if (isValidMediaSrc) {
+    bubble.classList.add("bubble-media");
+    const img = document.createElement("img");
+    img.className = kind === "sticker" ? "sticker-img" : "gif-img";
+    img.src = content;
+    img.alt = kind === "sticker" ? "Figurinha" : "GIF";
+    bubble.appendChild(img);
+    quoteLabel = kind === "sticker" ? "🖼️ Figurinha" : "GIF";
+  } else {
+    const textNode = document.createElement("span");
+    textNode.textContent = kind === "sticker" ? "🖼️ Figurinha" : kind === "gif" ? "GIF" : content;
+    bubble.appendChild(textNode);
+  }
+
+  decryptedTextCache.set(id, quoteLabel);
 
   const time = document.createElement("span");
-  time.className = "bubble-time";
+  time.className = "bubble-time" + (isValidMediaSrc ? " bubble-time-media" : "");
   time.textContent = formatTime(data.ts);
   bubble.appendChild(time);
 
@@ -1469,7 +1623,7 @@ async function renderMessage(id, data) {
   replyBtn.className = "msg-reply-btn";
   replyBtn.title = "Responder";
   replyBtn.textContent = "↩";
-  replyBtn.addEventListener("click", () => startReply(id, isMe ? "Você" : data.senderName, text));
+  replyBtn.addEventListener("click", () => startReply(id, isMe ? "Você" : data.senderName, quoteLabel));
 
   col.appendChild(bubble);
   row.appendChild(col);
@@ -1542,46 +1696,119 @@ function cancelReply() {
 
 btnCancelReply.addEventListener("click", cancelReply);
 
-messageForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const text = messageInput.value.trim();
-  if (!text || !activeChatId) return;
+// ---------- painel de figurinhas e GIFs ----------
 
+btnAttach.addEventListener("click", (e) => {
+  e.stopPropagation();
+  attachPanel.classList.toggle("hidden");
+});
+
+document.addEventListener("click", (e) => {
+  if (attachPanel.classList.contains("hidden")) return;
+  if (attachPanel.contains(e.target) || btnAttach.contains(e.target)) return;
+  attachPanel.classList.add("hidden");
+});
+
+attachTabs.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-tab]");
+  if (!btn) return;
+  [...attachTabs.children].forEach((b) => b.classList.toggle("active", b === btn));
+  tabStickersPanel.classList.toggle("hidden", btn.dataset.tab !== "stickers");
+  tabGifsPanel.classList.toggle("hidden", btn.dataset.tab !== "gifs");
+  if (btn.dataset.tab === "gifs" && !gifResults.children.length) searchGifs("");
+});
+
+const TENOR_CONFIGURED = TENOR_API_KEY && TENOR_API_KEY !== "SUBSTITUA_AQUI";
+if (!TENOR_CONFIGURED) gifHint.classList.remove("hidden");
+
+async function searchGifs(query) {
+  if (!TENOR_CONFIGURED) return;
+  gifResults.innerHTML = "";
+  try {
+    const endpoint = query
+      ? `https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query)}&key=${TENOR_API_KEY}&client_key=bapo&limit=24&media_filter=tinygif,gif`
+      : `https://tenor.googleapis.com/v2/featured?key=${TENOR_API_KEY}&client_key=bapo&limit=24&media_filter=tinygif,gif`;
+    const res = await fetch(endpoint);
+    const data = await res.json();
+    (data.results || []).forEach((gif) => {
+      const formats = gif.media_formats || {};
+      const previewUrl = (formats.tinygif || formats.gif || {}).url;
+      const fullUrl = (formats.gif || formats.tinygif || {}).url;
+      if (!previewUrl || !fullUrl) return;
+
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "gif-result-item";
+      const img = document.createElement("img");
+      img.src = previewUrl;
+      img.alt = "";
+      item.appendChild(img);
+      item.addEventListener("click", async () => {
+        attachPanel.classList.add("hidden");
+        await sendChatMessage(fullUrl, "gif");
+      });
+      gifResults.appendChild(item);
+    });
+  } catch (e) {
+    showAppError("Não foi possível buscar GIFs agora.");
+  }
+}
+
+gifSearchInput.addEventListener("input", () => {
+  clearTimeout(gifSearchDebounce);
+  gifSearchDebounce = setTimeout(() => searchGifs(gifSearchInput.value.trim()), 400);
+});
+
+async function sendChatMessage(content, kind = "text") {
+  if (!activeChatId || !content) return false;
   const chat = chats.get(activeChatId);
   const key = await getChatKey(chat);
   if (!key) {
     showAppError("Ainda não foi possível estabelecer a chave de criptografia desta conversa. Tente de novo em instantes.");
-    return;
+    return false;
   }
 
-  messageInput.value = "";
   const ts = Date.now();
   const chatRef = doc(db, "chats", activeChatId);
   const replySnapshot = replyingTo;
   cancelReply();
   try {
-    const { ciphertext, iv } = await encryptText(key, text);
+    const { ciphertext, iv } = await encryptText(key, content);
     const msgData = {
       senderId: myUid,
       senderName: myProfile.name,
       ciphertext,
       iv,
+      kind,
       ts,
       readBy: [],
       readAt: {},
     };
     if (replySnapshot) msgData.replyTo = { messageId: replySnapshot.messageId, senderName: replySnapshot.senderName };
     await addDoc(collection(chatRef, "messages"), msgData);
-    const chatUpdate = { lastMessage: { ciphertext, iv, senderName: myProfile.name, senderId: myUid, ts }, [`typing.${myUid}`]: 0 };
+    const chatUpdate = {
+      lastMessage: { ciphertext, iv, senderName: myProfile.name, senderId: myUid, ts, kind },
+      [`typing.${myUid}`]: 0,
+    };
     (chat.memberIds || [])
       .filter((uid) => uid !== myUid)
       .forEach((uid) => {
         chatUpdate[`unreadCount.${uid}`] = increment(1);
       });
     await updateDoc(chatRef, chatUpdate);
+    return true;
   } catch (err) {
     showAppError("Não foi possível enviar: " + err.message);
+    return false;
   }
+}
+
+messageForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = messageInput.value.trim();
+  if (!text || !activeChatId) return;
+  messageInput.value = "";
+  await sendChatMessage(text, "text");
 });
 
 // ---------- modal: nova conversa / grupo / entrar com código ----------
@@ -1752,6 +1979,7 @@ document.addEventListener("keydown", (e) => {
     if (!modalOverlay.classList.contains("hidden")) closeModal();
     participantsModal.classList.add("hidden");
     chatMenu.classList.add("hidden");
+    attachPanel.classList.add("hidden");
   }
 });
 
