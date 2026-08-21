@@ -10,4 +10,4 @@
 // O plano grátis já vem liberado (chave "beta", com limite de buscas por
 // hora bem generoso pra uso pessoal). Enquanto não configurar, a aba de GIFs
 // mostra um aviso em vez de tentar buscar.
-export const GIPHY_API_KEY = "SUBSTITUA_AQUI";
+export const GIPHY_API_KEY = "8EIutJ3FTEKnJ308ml0GJQxW81ddjfpR";
