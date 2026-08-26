@@ -1443,6 +1443,32 @@ input[type="password"]:focus {
 .participant-name {
   font-size: 0.92rem;
   font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.participant-action {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--primary);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.participant-action:hover {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
+
+.participant-action:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .participant-you {

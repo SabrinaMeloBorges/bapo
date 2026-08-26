@@ -1116,10 +1116,19 @@ function updateActiveChatHeader(chat) {
 
 // ---------- criar / entrar em conversas ----------
 
-async function createDirectChat() {
+async function createDirectChat(peer) {
   await authReady;
   const code = randomCode();
   const encKeyRaw = await generateSharedKeyRaw();
+  const memberIds = [myUid];
+  const memberProfiles = { [myUid]: myMemberProfile() };
+  // quando a conversa nasce a partir da lista de participantes de um grupo,
+  // já sabemos quem é a outra pessoa — ela entra como membro na hora, sem
+  // precisar de código de convite.
+  if (peer && peer.uid && peer.uid !== myUid) {
+    memberIds.push(peer.uid);
+    memberProfiles[peer.uid] = peer.profile || { name: "…", avatar: null };
+  }
   const chatRef = await addDoc(collection(db, "chats"), {
     type: "direct",
     name: "",
@@ -1127,13 +1136,36 @@ async function createDirectChat() {
     inviteCode: code,
     encKeyRaw,
     ephemeral: false,
-    memberIds: [myUid],
-    memberProfiles: { [myUid]: myMemberProfile() },
+    memberIds,
+    memberProfiles,
     createdAt: Date.now(),
     lastMessage: null,
   });
   await setDoc(doc(db, "invites", code), { chatId: chatRef.id, type: "direct" });
   return chatRef.id;
+}
+
+// procura uma conversa individual que já exista com essa pessoa
+function findDirectChatWith(uid) {
+  for (const chat of chats.values()) {
+    if (chat.type !== "direct") continue;
+    const ids = chat.memberIds || [];
+    if (ids.length === 2 && ids.includes(uid) && ids.includes(myUid)) return chat.id;
+  }
+  return null;
+}
+
+// abre (ou cria) a conversa individual com um participante do grupo
+async function openDirectChatWith(uid, profile) {
+  const existing = findDirectChatWith(uid);
+  if (existing) {
+    participantsModal.classList.add("hidden");
+    openChat(existing);
+    return;
+  }
+  const chatId = await createDirectChat({ uid, profile });
+  participantsModal.classList.add("hidden");
+  openChat(chatId);
 }
 
 async function createGroupChat(name, icon) {
@@ -1439,6 +1471,23 @@ btnParticipants.addEventListener("click", () => {
       name.appendChild(you);
     }
     row.appendChild(name);
+
+    if (uid !== myUid) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "participant-action";
+      btn.textContent = findDirectChatWith(uid) ? "Abrir conversa" : "Enviar mensagem";
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await openDirectChatWith(uid, profile);
+        } catch (err) {
+          btn.disabled = false;
+          showAppError("Não foi possível abrir a conversa: " + err.message);
+        }
+      });
+      row.appendChild(btn);
+    }
 
     participantsList.appendChild(row);
   });
