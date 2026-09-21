@@ -1247,7 +1247,12 @@ function subscribeToChatList() {
       }
 
       renderChatList();
-      if (activeChatId) updateActiveChatHeader(chats.get(activeChatId));
+      if (activeChatId) {
+        updateActiveChatHeader(chats.get(activeChatId));
+        // atualiza o "digitando" na hora que a mudança chega, sem esperar o
+        // temporizador (que o navegador atrasa em abas em segundo plano)
+        renderPeerPresence();
+      }
     },
     (err) => showAppError("Erro ao carregar conversas: " + err.message)
   );
@@ -1357,12 +1362,20 @@ function renderChatList() {
 
     const unreadCount = (chat.unreadCount && chat.unreadCount[myUid]) || 0;
 
+    const typers = (chat.memberIds || []).filter((uid) => uid !== myUid && isTyping(chat, uid));
     const preview = document.createElement("p");
-    preview.className = "chat-item-preview" + (unreadCount > 0 ? " unread" : "");
-    preview.textContent = "…";
-    decryptPreview(chat, chat.lastMessage).then((text) => {
-      preview.textContent = text;
-    });
+    preview.className = "chat-item-preview" + (unreadCount > 0 ? " unread" : "") + (typers.length ? " typing" : "");
+
+    if (typers.length) {
+      // mostra na lista também, pra saber sem precisar abrir a conversa
+      const who = (chat.memberProfiles && chat.memberProfiles[typers[0]] && chat.memberProfiles[typers[0]].name) || "alguém";
+      preview.textContent = chat.type === "group" ? who + " está digitando…" : "digitando…";
+    } else {
+      preview.textContent = "…";
+      decryptPreview(chat, chat.lastMessage).then((text) => {
+        preview.textContent = text;
+      });
+    }
     col.appendChild(preview);
 
     item.appendChild(col);
@@ -1703,10 +1716,27 @@ function subscribePeerPresence(chat, otherUid) {
   });
 }
 
+// O aviso vale a partir do momento em que a marca de "digitando" chega aqui,
+// não pelo horário do aparelho de quem digitou — relógios diferentes entre os
+// dois aparelhos faziam o aviso não aparecer (ou sumir antes da hora).
+const typingSeenAt = new Map();
+
 function isTyping(chat, uid) {
   if (!chat || !chat.typing || !uid) return false;
   const ts = chat.typing[uid];
-  return !!ts && Date.now() - ts < TYPING_TTL_MS;
+  const key = chat.id + "|" + uid;
+
+  if (!ts) {
+    typingSeenAt.delete(key);
+    return false;
+  }
+
+  const seen = typingSeenAt.get(key);
+  if (!seen || seen.ts !== ts) {
+    typingSeenAt.set(key, { ts, at: Date.now() });
+    return true;
+  }
+  return Date.now() - seen.at < TYPING_TTL_MS;
 }
 
 function setStatusDot(state) {
@@ -1777,7 +1807,9 @@ function updateTypingBubble(chat) {
     typingIndicator.appendChild(label);
   }
 
+  const nearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 120;
   typingIndicator.classList.remove("hidden");
+  if (nearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function renderPeerPresence() {

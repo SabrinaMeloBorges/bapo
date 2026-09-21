@@ -865,6 +865,11 @@ input.search-input {
   font-weight: 600;
 }
 
+.chat-item-preview.typing {
+  color: var(--primary);
+  font-weight: 600;
+}
+
 .chat-item-badge {
   flex-shrink: 0;
   min-width: 21px;
@@ -1176,21 +1181,17 @@ input.search-input {
   width: 100%;
 }
 
+/* Fica numa faixa própria entre as mensagens e o campo de escrita: some e
+   aparece sem cobrir nenhuma bolha. */
 .typing-indicator {
-  position: absolute;
-  left: clamp(16px, 4vw, 40px);
-  bottom: 10px;
-  z-index: 6;
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: calc(100% - 2 * clamp(16px, 4vw, 40px));
-  padding: 5px 10px 5px 6px;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  border: 1.5px solid var(--border);
-  box-shadow: var(--shadow-soft);
-  backdrop-filter: blur(6px);
+  padding: 4px clamp(16px, 4vw, 40px) 8px;
   animation: toast-in 0.18s ease;
 }
 
