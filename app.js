@@ -31,6 +31,7 @@ import {
   increment,
   deleteField,
   orderBy,
+  limitToLast,
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 import { firebaseConfig, USE_EMULATOR } from "./firebase-config.js";
@@ -100,8 +101,23 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister())).catch(() => {});
     if (window.caches) caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
   } else {
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloadedForUpdate = false;
+
+    // Quando um service worker novo assume, recarrega uma vez: garante que
+    // HTML, CSS e JS sejam sempre da mesma versão (senão dá pra ficar com um
+    // arquivo velho em cache e o layout quebrar).
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController || reloadedForUpdate) return;
+      reloadedForUpdate = true;
+      location.reload();
+    });
+
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
+      navigator.serviceWorker
+        .register("sw.js")
+        .then((reg) => reg.update())
+        .catch(() => {});
     });
   }
 }
@@ -1983,9 +1999,19 @@ function flashText(button, text) {
 
 // ---------- mensagens (cifradas) ----------
 
-function subscribeToMessages(chatId) {
+// Abrir uma conversa carrega só as últimas mensagens; o resto vem sob demanda
+// pelo botão "Ver mensagens anteriores". Sem isso, um histórico grande
+// travava a tela toda vez que a conversa era aberta.
+const MESSAGE_PAGE_SIZE = 120;
+let messageWindow = MESSAGE_PAGE_SIZE;
+let loadMoreBtn = null;
+let scrollAnchorId = null;
+
+function subscribeToMessages(chatId, opts = {}) {
   if (unsubMessages) unsubMessages();
+  if (!opts.keepWindow) messageWindow = MESSAGE_PAGE_SIZE;
   messagesEl.innerHTML = "";
+  loadMoreBtn = null;
   lastDayKey = null;
   typingSignature = "";
   typingIndicator.classList.add("hidden");
@@ -1995,17 +2021,18 @@ function subscribeToMessages(chatId) {
   renderedMessageIds = new Set();
   messageRows.clear();
 
-  const q = query(collection(db, "chats", chatId, "messages"), orderBy("ts"));
+  const q = query(collection(db, "chats", chatId, "messages"), orderBy("ts"), limitToLast(messageWindow));
   unsubMessages = onSnapshot(
     q,
     async (snap) => {
+      const added = [];
+
       for (const change of snap.docChanges()) {
         const data = change.doc.data();
         if (change.type === "added") {
           if (renderedMessageIds.has(change.doc.id)) continue;
           renderedMessageIds.add(change.doc.id);
-          await renderMessage(change.doc.id, data);
-          markAsReadIfNeeded(chatId, change.doc.id, data);
+          added.push({ id: change.doc.id, data });
         } else if (change.type === "modified") {
           updateMessageTicks(change.doc.id, data);
         } else if (change.type === "removed") {
@@ -2016,18 +2043,65 @@ function subscribeToMessages(chatId) {
           pruneDayDividers();
         }
       }
+
+      if (added.length) {
+        await renderMessages(added);
+        markAsReadInBatch(chatId, added);
+        updateLoadMoreButton(chatId, snap.size);
+      }
     },
     (err) => showAppError("Erro nas mensagens: " + err.message)
   );
 }
 
-function markAsReadIfNeeded(chatId, messageId, data) {
-  if (data.senderId === myUid) return;
-  if ((data.readBy || []).includes(myUid)) return;
-  updateDoc(doc(db, "chats", chatId, "messages", messageId), {
-    readBy: arrayUnion(myUid),
-    [`readAt.${myUid}`]: Date.now(),
-  }).catch(() => {});
+// Mostra o botão de carregar mais só quando o histórico pode ter mais coisa
+// do que a janela atual.
+function updateLoadMoreButton(chatId, loadedCount) {
+  const canHaveMore = loadedCount >= messageWindow;
+
+  if (!canHaveMore) {
+    if (loadMoreBtn) {
+      loadMoreBtn.remove();
+      loadMoreBtn = null;
+    }
+    return;
+  }
+
+  if (!loadMoreBtn) {
+    loadMoreBtn = document.createElement("button");
+    loadMoreBtn.type = "button";
+    loadMoreBtn.className = "load-more-btn";
+    loadMoreBtn.textContent = "Ver mensagens anteriores";
+    loadMoreBtn.addEventListener("click", () => {
+      loadMoreBtn.disabled = true;
+      loadMoreBtn.textContent = "Carregando…";
+      const oldest = [...messageRows.keys()][0];
+      scrollAnchorId = oldest || null;
+      messageWindow += MESSAGE_PAGE_SIZE;
+      subscribeToMessages(chatId, { keepWindow: true });
+    });
+  }
+
+  if (messagesEl.firstChild !== loadMoreBtn) messagesEl.insertBefore(loadMoreBtn, messagesEl.firstChild);
+}
+
+// Marcar como lida em lote: antes era uma escrita por mensagem, o que
+// engasgava ao abrir uma conversa com muita coisa sem ler.
+function markAsReadInBatch(chatId, entries) {
+  const pending = entries.filter((e) => e.data.senderId !== myUid && !(e.data.readBy || []).includes(myUid));
+  if (!pending.length) return;
+
+  const now = Date.now();
+  for (let i = 0; i < pending.length; i += 400) {
+    const batch = writeBatch(db);
+    pending.slice(i, i + 400).forEach((e) => {
+      batch.update(doc(db, "chats", chatId, "messages", e.id), {
+        readBy: arrayUnion(myUid),
+        [`readAt.${myUid}`]: now,
+      });
+    });
+    batch.commit().catch(() => {});
+  }
 }
 
 function formatTime(ts) {
@@ -2063,7 +2137,7 @@ function formatDayLabel(ts) {
   );
 }
 
-function ensureDayDivider(ts) {
+function ensureDayDivider(ts, target) {
   const key = dayKeyOf(ts);
   if (key === lastDayKey) return;
   lastDayKey = key;
@@ -2074,7 +2148,7 @@ function ensureDayDivider(ts) {
   const label = document.createElement("span");
   label.textContent = formatDayLabel(ts);
   divider.appendChild(label);
-  messagesEl.appendChild(divider);
+  (target || messagesEl).appendChild(divider);
 }
 
 // Depois que mensagens somem (limpeza ou mensagens temporárias), tira os
@@ -2112,9 +2186,36 @@ function readTooltip(chat, readAt) {
   return "Visto às " + formatTime(Math.max(...times));
 }
 
-async function renderMessage(id, data) {
-  const isMe = data.senderId === myUid;
+// Decifra tudo em paralelo, monta as bolhas num fragmento e insere de uma vez
+// só (antes era uma por uma, com rolagem forçada a cada mensagem).
+async function renderMessages(entries) {
   const chat = chats.get(activeChatId);
+  const contents = await Promise.all(entries.map((e) => decryptMessageText(chat, e.data)));
+
+  entries.forEach((e, i) => {
+    const kind = e.data.kind || "text";
+    const content = contents[i];
+    decryptedTextCache.set(e.id, kind === "sticker" ? "🖼️ Figurinha" : kind === "gif" ? "GIF" : content);
+  });
+
+  const frag = document.createDocumentFragment();
+  entries.forEach((e, i) => {
+    ensureDayDivider(e.data.ts, frag);
+    frag.appendChild(renderMessage(e.id, e.data, contents[i], chat));
+  });
+
+  messagesEl.appendChild(frag);
+
+  if (scrollAnchorId && messageRows.has(scrollAnchorId)) {
+    messageRows.get(scrollAnchorId).row.scrollIntoView({ block: "start" });
+    scrollAnchorId = null;
+  } else {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+function renderMessage(id, data, content, chat) {
+  const isMe = data.senderId === myUid;
   const kind = data.kind || "text";
 
   const row = document.createElement("div");
@@ -2151,7 +2252,6 @@ async function renderMessage(id, data) {
     bubble.appendChild(quote);
   }
 
-  const content = await decryptMessageText(chat, data);
   const isValidMediaSrc = (kind === "sticker" || kind === "gif") && (content.startsWith("data:image") || content.startsWith("http"));
   let quoteLabel = content;
 
@@ -2196,11 +2296,9 @@ async function renderMessage(id, data) {
   col.appendChild(bubble);
   row.appendChild(col);
   row.appendChild(replyBtn);
-  ensureDayDivider(data.ts);
-  messagesEl.appendChild(row);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
 
   messageRows.set(id, { row, ticksEl, data });
+  return row;
 }
 
 async function decryptMessageText(chat, data) {

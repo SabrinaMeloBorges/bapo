@@ -1231,13 +1231,35 @@ input.search-input {
 }
 
 .day-divider {
-  position: sticky;
-  top: -6px;
-  z-index: 5;
   display: flex;
   justify-content: center;
-  margin: 10px 0 4px;
+  margin: 14px 0 6px;
   pointer-events: none;
+}
+
+.load-more-btn {
+  align-self: center;
+  flex-shrink: 0;
+  margin-bottom: 10px;
+  padding: 8px 18px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .day-divider span {
