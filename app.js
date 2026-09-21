@@ -22,6 +22,7 @@ import {
   getDoc,
   updateDoc,
   getDocs,
+  deleteDoc,
   query,
   where,
   onSnapshot,
@@ -40,8 +41,23 @@ const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem O/0/I/1 pra evitar
 const AVATAR_SEEDS = ["Felix", "Aneka", "Milo", "Zoe", "Leo", "Nala", "Max", "Luna", "Coco", "Ivy", "Rex", "Mia"];
 const AVATAR_STYLE = "adventurer";
 
-const GROUP_ICON_SEEDS = ["Grupo1", "Grupo2", "Grupo3", "Grupo4", "Grupo5", "Grupo6", "Grupo7", "Grupo8"];
-const GROUP_ICON_STYLE = "icons";
+const GROUP_ICON_STYLE = "icons"; // estilo antigo, mantido pra grupos criados antes
+const GROUP_ICON_BACKGROUNDS = "f6c89f,f4a09c,f7d08a,a8d5b5,9ec7e8,c9b6e4,e9b7ce,bfd8bd";
+const GROUP_ICON_PRESETS = [
+  "shapes:Girassol",
+  "shapes:Vitrola",
+  "shapes:Cactos",
+  "shapes:Fliperama",
+  "rings:Saturno",
+  "rings:Disco",
+  "rings:Vinil",
+  "fun-emoji:Pipoca",
+  "fun-emoji:Festa",
+  "fun-emoji:Turma",
+  "thumbs:Galera",
+  "bottts-neutral:Radinho",
+  "bottts-neutral:Fita",
+];
 
 const COLOR_THEMES = {
   indigo: { label: "Índigo", light: ["#4f46e5", "#4338ca"], dark: ["#6366f1", "#7577f5"] },
@@ -74,10 +90,20 @@ if (USE_EMULATOR) {
   console.info("[bapo] usando emuladores locais do Firebase");
 }
 
+// Em produção o service worker guarda o "app shell" pra abrir offline. Rodando
+// local ele só atrapalha (serve arquivo velho enquanto você edita), então fica
+// desligado e qualquer registro antigo é removido.
+const IS_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
+
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
-  });
+  if (IS_LOCAL_HOST) {
+    navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister())).catch(() => {});
+    if (window.caches) caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
+  } else {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
 }
 
 const el = (id) => document.getElementById(id);
@@ -90,8 +116,16 @@ function resolveAvatarSrc(value) {
   return `https://api.dicebear.com/9.x/${AVATAR_STYLE}/svg?seed=${encodeURIComponent(value)}&size=80`;
 }
 
-function groupIconUrl(seed) {
-  return `https://api.dicebear.com/9.x/${GROUP_ICON_STYLE}/svg?seed=${encodeURIComponent(seed)}&size=80&backgroundType=gradientLinear`;
+// O ícone de um grupo pode ser um preset ("estilo:semente"), uma semente
+// antiga (só o texto, do estilo "icons") ou uma foto enviada (data URL).
+function groupIconUrl(value) {
+  const icon = value || GROUP_ICON_PRESETS[0];
+  if (icon.startsWith("data:image")) return icon;
+  const [style, seed] = icon.includes(":") ? icon.split(":") : [GROUP_ICON_STYLE, icon];
+  return (
+    `https://api.dicebear.com/9.x/${style}/svg?seed=${encodeURIComponent(seed)}` +
+    `&size=96&backgroundColor=${GROUP_ICON_BACKGROUNDS}&backgroundType=gradientLinear`
+  );
 }
 
 function resizeImageFile(file, size = 128, quality = 0.72) {
@@ -121,8 +155,19 @@ function resizeImageFile(file, size = 128, quality = 0.72) {
 const STICKER_MAX_SIZE = 200; // px, mantém o arquivo pequeno o bastante pra caber num documento do Firestore
 const STICKER_MAX_BYTES = 700 * 1024; // limite de segurança bem abaixo de 1 MiB (limite de um documento)
 
+// WebP guarda transparência e costuma ocupar bem menos que PNG; se o navegador
+// não suportar (ou o PNG sair menor), usa PNG mesmo.
+function toSmallestImageDataUrl(canvas) {
+  const png = canvas.toDataURL("image/png");
+  try {
+    const webp = canvas.toDataURL("image/webp", 0.92);
+    if (webp.startsWith("data:image/webp") && webp.length < png.length) return webp;
+  } catch (e) {}
+  return png;
+}
+
 // Diferente da foto de perfil (recortada em quadrado, JPEG): figurinha
-// preserva a proporção original e o fundo transparente (PNG), sem recortar.
+// preserva a proporção original e o fundo transparente, sem recortar.
 function resizeStickerFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -137,7 +182,7 @@ function resizeStickerFile(file) {
         canvas.height = h;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL("image/png");
+        const dataUrl = toSmallestImageDataUrl(canvas);
         if (dataUrl.length > STICKER_MAX_BYTES) {
           reject(new Error("Essa imagem ficou grande demais mesmo depois de reduzida. Tente uma mais simples."));
           return;
@@ -285,7 +330,6 @@ const chatTitleEl = el("chat-title");
 const chatSubtitleEl = el("chat-subtitle");
 const btnChatMenu = el("btn-chat-menu");
 const chatMenu = el("chat-menu");
-const btnParticipants = el("btn-participants");
 const participantsModal = el("participants-modal");
 const participantsList = el("participants-list");
 const btnCloseParticipants = el("btn-close-participants");
@@ -300,6 +344,7 @@ const inviteBannerCode = el("invite-banner-code");
 const btnInviteBannerCopy = el("btn-invite-banner-copy");
 
 const messagesEl = el("messages");
+const typingIndicator = el("typing-indicator");
 const messageForm = el("message-form");
 const messageInput = el("message-input");
 const btnSend = el("btn-send");
@@ -321,6 +366,31 @@ const gifResults = el("gif-results");
 const gifHint = el("gif-hint");
 
 const appError = el("app-error");
+
+const chatSearchInput = el("chat-search");
+const btnClearSearch = el("btn-clear-search");
+const chatFilters = el("chat-filters");
+const btnNavChats = el("btn-nav-chats");
+const btnNavSearch = el("btn-nav-search");
+const btnNavNew = el("btn-nav-new");
+const navChatsBadge = el("nav-chats-badge");
+const btnEmptyNewChat = el("btn-empty-new-chat");
+const btnArchiveChat = el("btn-archive-chat");
+
+const btnChatInfo = el("btn-chat-info");
+const chatInfoAvatar = el("chat-info-avatar");
+const chatInfoTitle = el("chat-info-title");
+const chatInfoSubtitle = el("chat-info-subtitle");
+const chatInfoEdit = el("chat-info-edit");
+const chatInfoNameInput = el("chat-info-name");
+const chatInfoIconGrid = el("chat-info-icon-grid");
+const btnChatInfoPhoto = el("btn-chat-info-photo");
+const chatInfoFile = el("chat-info-file");
+const btnSaveChatInfo = el("btn-save-chat-info");
+const chatInfoCode = el("chat-info-code");
+const btnChatInfoCopy = el("btn-chat-info-copy");
+const chatInfoError = el("chat-info-error");
+const groupIconFile = el("group-icon-file");
 
 const modalOverlay = el("new-chat-modal");
 const modalTabs = el("modal-tabs");
@@ -354,7 +424,7 @@ let myProfile = null;
 let myUid = null;
 let pendingInvite = null;
 let selectedAvatarSeed = AVATAR_SEEDS[0];
-let selectedGroupIcon = GROUP_ICON_SEEDS[0];
+let selectedGroupIcon = GROUP_ICON_PRESETS[0];
 let myStickers = [];
 let gifSearchDebounce = null;
 
@@ -611,45 +681,212 @@ async function saveProfile(profile) {
 }
 
 // ---------- figurinhas próprias ----------
+//
+// Ficam guardadas no IndexedDB deste aparelho (aguenta bem mais que o
+// localStorage, que estourava a cota e perdia a coleção ao recarregar). Quem
+// entra com e-mail/Google também tem uma cópia no Firestore, uma figurinha por
+// documento, pra sincronizar entre aparelhos.
 
-async function loadStickers() {
-  if (auth.currentUser && !auth.currentUser.isAnonymous) {
-    try {
-      const snap = await getDoc(doc(db, "stickers", myUid));
-      if (snap.exists() && Array.isArray(snap.data().list)) return snap.data().list;
-    } catch (e) {}
-    return [];
-  }
+const STICKER_DB_NAME = "bapo-stickers-db";
+const STICKER_STORE = "stickers";
+
+function openStickerDb() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("Este navegador não guarda figurinhas."));
+      return;
+    }
+    const req = indexedDB.open(STICKER_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const database = req.result;
+      if (!database.objectStoreNames.contains(STICKER_STORE)) {
+        database.createObjectStore(STICKER_STORE, { keyPath: "id" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("Não foi possível abrir o armazenamento local."));
+  });
+}
+
+function stickerTx(mode, run) {
+  return openStickerDb().then(
+    (database) =>
+      new Promise((resolve, reject) => {
+        const tx = database.transaction(STICKER_STORE, mode);
+        const store = tx.objectStore(STICKER_STORE);
+        const req = run(store);
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = () => reject(tx.error || new Error("Não foi possível salvar a figurinha."));
+        tx.onabort = () => reject(tx.error || new Error("Não foi possível salvar a figurinha."));
+      })
+  );
+}
+
+const localStickers = {
+  all: () => stickerTx("readonly", (store) => store.getAll()).then((list) => list || []),
+  put: (item) => stickerTx("readwrite", (store) => store.put(item)),
+  remove: (id) => stickerTx("readwrite", (store) => store.delete(id)),
+};
+
+function newStickerId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function isSyncedUser() {
+  return !!(auth.currentUser && !auth.currentUser.isAnonymous);
+}
+
+function cloudStickersRef() {
+  return collection(db, "stickers", myUid, "items");
+}
+
+// Traz o que estava no formato antigo (lista única no localStorage ou num só
+// documento do Firestore) pro novo formato, uma vez só.
+async function migrateOldStickers(existing) {
+  const known = new Set(existing.map((s) => s.dataUrl));
+  const imported = [];
+
   try {
     const raw = localStorage.getItem("bapo-stickers");
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    if (Array.isArray(parsed)) {
+      parsed.forEach((dataUrl) => {
+        if (typeof dataUrl === "string" && dataUrl.startsWith("data:image") && !known.has(dataUrl)) {
+          known.add(dataUrl);
+          imported.push({ id: newStickerId(), dataUrl, createdAt: Date.now() });
+        }
+      });
+    }
   } catch (e) {}
-  return [];
+
+  if (isSyncedUser()) {
+    try {
+      const snap = await getDoc(doc(db, "stickers", myUid));
+      const list = snap.exists() && Array.isArray(snap.data().list) ? snap.data().list : [];
+      list.forEach((dataUrl) => {
+        if (typeof dataUrl === "string" && dataUrl.startsWith("data:image") && !known.has(dataUrl)) {
+          known.add(dataUrl);
+          imported.push({ id: newStickerId(), dataUrl, createdAt: Date.now() });
+        }
+      });
+    } catch (e) {}
+  }
+
+  for (const item of imported) {
+    try {
+      await localStickers.put(item);
+    } catch (e) {}
+  }
+
+  if (imported.length) {
+    try {
+      localStorage.removeItem("bapo-stickers");
+    } catch (e) {}
+  }
+
+  return imported;
 }
 
-async function saveStickers(list) {
-  myStickers = list;
+async function syncStickersWithCloud(local) {
+  if (!isSyncedUser()) return local;
+
+  let cloud = [];
   try {
-    localStorage.setItem("bapo-stickers", JSON.stringify(list));
-  } catch (e) {}
-  if (auth.currentUser && !auth.currentUser.isAnonymous) {
+    const snap = await getDocs(cloudStickersRef());
+    snap.forEach((d) => {
+      const data = d.data();
+      if (data && typeof data.dataUrl === "string") {
+        cloud.push({ id: d.id, dataUrl: data.dataUrl, createdAt: data.createdAt || 0 });
+      }
+    });
+  } catch (e) {
+    return local; // sem permissão/rede: segue com o que tem no aparelho
+  }
+
+  const localIds = new Set(local.map((s) => s.id));
+  const cloudIds = new Set(cloud.map((s) => s.id));
+  const merged = [...local];
+
+  for (const item of cloud) {
+    if (localIds.has(item.id)) continue;
+    merged.push(item);
     try {
-      await setDoc(doc(db, "stickers", myUid), { list });
+      await localStickers.put(item);
+    } catch (e) {}
+  }
+
+  for (const item of local) {
+    if (cloudIds.has(item.id)) continue;
+    try {
+      await setDoc(doc(db, "stickers", myUid, "items", item.id), {
+        dataUrl: item.dataUrl,
+        createdAt: item.createdAt || Date.now(),
+      });
+    } catch (e) {}
+  }
+
+  return merged;
+}
+
+async function loadStickers() {
+  let local = [];
+  try {
+    local = await localStickers.all();
+  } catch (e) {
+    local = [];
+  }
+
+  const imported = await migrateOldStickers(local);
+  const all = await syncStickersWithCloud([...local, ...imported]);
+
+  return all.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+}
+
+async function addSticker(dataUrl) {
+  const item = { id: newStickerId(), dataUrl, createdAt: Date.now() };
+  myStickers = [...myStickers, item];
+
+  try {
+    await localStickers.put(item);
+  } catch (e) {
+    // sem armazenamento local (aba anônima, por exemplo): a figurinha vale
+    // só enquanto a aba estiver aberta
+    showAppError("A figurinha foi adicionada, mas este navegador não consegue guardá-la pra depois.");
+  }
+
+  if (isSyncedUser()) {
+    try {
+      await setDoc(doc(db, "stickers", myUid, "items", item.id), {
+        dataUrl: item.dataUrl,
+        createdAt: item.createdAt,
+      });
+    } catch (e) {}
+  }
+  return item;
+}
+
+async function removeSticker(id) {
+  myStickers = myStickers.filter((s) => s.id !== id);
+  try {
+    await localStickers.remove(id);
+  } catch (e) {}
+  if (isSyncedUser()) {
+    try {
+      await deleteDoc(doc(db, "stickers", myUid, "items", id));
     } catch (e) {}
   }
 }
 
 function renderStickerGrid() {
   [...stickerGrid.querySelectorAll(".sticker-thumb")].forEach((el) => el.remove());
-  myStickers.forEach((dataUrl, index) => {
+  myStickers.forEach((sticker) => {
     const thumb = document.createElement("button");
     thumb.type = "button";
     thumb.className = "sticker-thumb";
     thumb.title = "Enviar figurinha";
 
     const img = document.createElement("img");
-    img.src = dataUrl;
+    img.src = sticker.dataUrl;
     img.alt = "";
     thumb.appendChild(img);
 
@@ -660,15 +897,14 @@ function renderStickerGrid() {
     removeBtn.textContent = "✕";
     removeBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      const updated = myStickers.filter((_, i) => i !== index);
-      await saveStickers(updated);
+      await removeSticker(sticker.id);
       renderStickerGrid();
     });
     thumb.appendChild(removeBtn);
 
     thumb.addEventListener("click", async () => {
       attachPanel.classList.add("hidden");
-      await sendChatMessage(dataUrl, "sticker");
+      await sendChatMessage(sticker.dataUrl, "sticker");
     });
 
     stickerGrid.insertBefore(thumb, btnAddSticker);
@@ -687,7 +923,7 @@ stickerFileInput.addEventListener("change", async () => {
   }
   try {
     const dataUrl = await resizeStickerFile(file);
-    await saveStickers([...myStickers, dataUrl]);
+    await addSticker(dataUrl);
     renderStickerGrid();
   } catch (err) {
     window.alert(err.message);
@@ -756,30 +992,68 @@ avatarFileInput.addEventListener("change", async () => {
   }
 });
 
-function buildGroupIconGrid() {
-  groupIconGrid.innerHTML = "";
-  GROUP_ICON_SEEDS.forEach((seed, i) => {
+// Monta uma grade de ícones de grupo (presets + a foto enviada, quando houver).
+// Devolve uma função pra marcar visualmente qual está escolhido.
+function buildIconGrid(container, current, onSelect) {
+  container.innerHTML = "";
+  const options = [...GROUP_ICON_PRESETS];
+  if (current && !options.includes(current)) options.unshift(current);
+
+  const markSelected = (value) => {
+    [...container.children].forEach((c) => c.classList.toggle("selected", c.dataset.icon === value));
+  };
+
+  options.forEach((value, i) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "avatar-option" + (i === 0 ? " selected" : "");
-    btn.dataset.seed = seed;
+    btn.className = "avatar-option";
+    btn.dataset.icon = value;
     btn.setAttribute("aria-label", "Ícone " + (i + 1));
 
     const img = document.createElement("img");
-    img.src = groupIconUrl(seed);
+    img.src = groupIconUrl(value);
     img.alt = "";
     btn.appendChild(img);
 
     btn.addEventListener("click", () => {
-      selectedGroupIcon = seed;
-      [...groupIconGrid.children].forEach((c) => c.classList.remove("selected"));
-      btn.classList.add("selected");
+      markSelected(value);
+      onSelect(value);
     });
 
-    groupIconGrid.appendChild(btn);
+    container.appendChild(btn);
   });
-  selectedGroupIcon = GROUP_ICON_SEEDS[0];
+
+  markSelected(current);
+  return markSelected;
 }
+
+let markGroupIconSelected = () => {};
+
+function buildGroupIconGrid(current) {
+  selectedGroupIcon = current || GROUP_ICON_PRESETS[0];
+  markGroupIconSelected = buildIconGrid(groupIconGrid, selectedGroupIcon, (value) => {
+    selectedGroupIcon = value;
+  });
+
+  const upload = document.createElement("button");
+  upload.type = "button";
+  upload.className = "avatar-option avatar-upload-tile";
+  upload.title = "Enviar uma foto do computador";
+  upload.innerHTML = "<span>+</span>";
+  upload.addEventListener("click", () => groupIconFile.click());
+  groupIconGrid.appendChild(upload);
+}
+
+groupIconFile.addEventListener("change", async () => {
+  const file = groupIconFile.files && groupIconFile.files[0];
+  groupIconFile.value = "";
+  if (!file) return;
+  try {
+    buildGroupIconGrid(await resizeImageFile(file, 128, 0.72));
+  } catch (err) {
+    showModalError(err.message);
+  }
+});
 
 function updateProfileContinueState() {
   btnProfileContinue.disabled = !profileNameInput.value.trim();
@@ -940,7 +1214,7 @@ function chatDisplayInfo(chat) {
   if (chat.type === "group") {
     return {
       name: chat.name || "Grupo",
-      avatarSrc: groupIconUrl(chat.icon || GROUP_ICON_SEEDS[0]),
+      avatarSrc: groupIconUrl(chat.icon),
       isGroup: true,
     };
   }
@@ -954,13 +1228,58 @@ function chatDisplayInfo(chat) {
   };
 }
 
-function renderChatList() {
-  const list = [...chats.values()].sort((a, b) => {
-    const ta = (a.lastMessage && a.lastMessage.ts) || a.createdAt || 0;
-    const tb = (b.lastMessage && b.lastMessage.ts) || b.createdAt || 0;
-    return tb - ta;
-  });
+let chatFilter = "all";
+let chatSearchTerm = "";
 
+function getArchivedIds() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem("bapo-archived") || "[]"));
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function isArchived(chatId) {
+  return getArchivedIds().has(chatId);
+}
+
+function setArchived(chatId, archived) {
+  const ids = getArchivedIds();
+  if (archived) ids.add(chatId);
+  else ids.delete(chatId);
+  try {
+    localStorage.setItem("bapo-archived", JSON.stringify([...ids]));
+  } catch (e) {}
+}
+
+function emptyListMessage() {
+  if (chatSearchTerm) return "Nenhuma conversa encontrada para essa busca.";
+  if (chatFilter === "unread") return "Nenhuma conversa não lida por aqui.";
+  if (chatFilter === "archived") return "Nenhuma conversa arquivada.";
+  return "Nenhuma conversa ainda. Toque em “+” pra começar.";
+}
+
+function renderChatList() {
+  const archived = getArchivedIds();
+  const list = [...chats.values()]
+    .filter((chat) => {
+      const unread = (chat.unreadCount && chat.unreadCount[myUid]) || 0;
+      if (chatFilter === "archived" && !archived.has(chat.id)) return false;
+      if (chatFilter !== "archived" && archived.has(chat.id)) return false;
+      if (chatFilter === "unread" && unread === 0) return false;
+      if (chatSearchTerm) {
+        const name = (chatDisplayInfo(chat).name || "").toLowerCase();
+        if (!name.includes(chatSearchTerm)) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const ta = (a.lastMessage && a.lastMessage.ts) || a.createdAt || 0;
+      const tb = (b.lastMessage && b.lastMessage.ts) || b.createdAt || 0;
+      return tb - ta;
+    });
+
+  chatListEmpty.textContent = emptyListMessage();
   chatListEmpty.classList.toggle("hidden", list.length > 0);
   chatListEl.innerHTML = "";
 
@@ -1022,6 +1341,8 @@ function renderChatList() {
 function updateTitleBadge() {
   const total = [...chats.values()].reduce((sum, c) => sum + ((c.unreadCount && c.unreadCount[myUid]) || 0), 0);
   document.title = total > 0 ? `(${total > 99 ? "99+" : total}) bapo` : "bapo — conversas e grupos em tempo real";
+  navChatsBadge.textContent = total > 99 ? "99+" : String(total);
+  navChatsBadge.classList.toggle("hidden", total === 0);
 }
 
 function markChatAsRead(chatId, chat) {
@@ -1087,14 +1408,12 @@ function updateActiveChatHeader(chat) {
 
   const memberCount = (chat.memberIds || []).length;
   if (chat.type === "group") {
-    btnLeave.textContent = "Sair do grupo";
+    setMenuItemText(btnLeave, "Sair do grupo");
     btnLeave.title = "Sair do grupo";
-    btnParticipants.classList.remove("hidden");
     chatStatusDot.classList.add("hidden"); // sem presença individual em grupos
   } else {
-    btnLeave.textContent = "Apagar contato";
+    setMenuItemText(btnLeave, "Apagar contato");
     btnLeave.title = "Apagar esse contato";
-    btnParticipants.classList.add("hidden");
     if (memberCount < 2) {
       chatSubtitleEl.textContent = "";
       chatStatusDot.classList.add("hidden");
@@ -1358,34 +1677,63 @@ function setStatusDot(state) {
 // Função "guarda-chuva" chamada sempre que algo pode ter mudado o texto
 // abaixo do nome no cabeçalho: presença do outro membro, ou alguém
 // digitando (em conversas individuais ou em grupos).
-let typingBubbleEl = null;
+let lastDayKey = null;
+let typingSignature = "";
 
+// Aviso de "digitando" fixo no canto inferior esquerdo da conversa. Em grupo
+// mostra a foto de quem está digitando (até três) e o nome embaixo.
 function updateTypingBubble(chat) {
-  let showBubble = false;
-  if (chat) {
-    if (chat.type === "group") {
-      showBubble = (chat.memberIds || []).some((uid) => uid !== myUid && isTyping(chat, uid));
-    } else {
-      const otherUid = (chat.memberIds || []).find((id) => id !== myUid);
-      showBubble = isTyping(chat, otherUid);
-    }
+  const typers = chat
+    ? (chat.memberIds || []).filter((uid) => uid !== myUid && isTyping(chat, uid))
+    : [];
+
+  const signature = (chat ? chat.id : "") + "|" + typers.join(",");
+  if (signature === typingSignature) return;
+  typingSignature = signature;
+
+  if (!typers.length) {
+    typingIndicator.classList.add("hidden");
+    typingIndicator.innerHTML = "";
+    return;
   }
 
-  if (showBubble) {
-    if (!typingBubbleEl) {
-      typingBubbleEl = document.createElement("div");
-      typingBubbleEl.className = "message-row row-them typing-row";
-      const bubble = document.createElement("div");
-      bubble.className = "bubble bubble-them typing-bubble";
-      bubble.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
-      typingBubbleEl.appendChild(bubble);
-      messagesEl.appendChild(typingBubbleEl);
-    }
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  } else if (typingBubbleEl) {
-    typingBubbleEl.remove();
-    typingBubbleEl = null;
+  const isGroup = chat.type === "group";
+  const profileOf = (uid) => (chat.memberProfiles && chat.memberProfiles[uid]) || null;
+
+  typingIndicator.innerHTML = "";
+
+  if (isGroup) {
+    const avatars = document.createElement("div");
+    avatars.className = "typing-avatars";
+    typers.slice(0, 3).forEach((uid) => {
+      const profile = profileOf(uid);
+      const img = document.createElement("img");
+      img.className = "typing-avatar";
+      img.alt = profile ? profile.name : "";
+      img.title = profile ? profile.name : "";
+      if (profile) img.src = resolveAvatarSrc(profile.avatar);
+      avatars.appendChild(img);
+    });
+    typingIndicator.appendChild(avatars);
   }
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble bubble-them typing-bubble";
+  bubble.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
+  typingIndicator.appendChild(bubble);
+
+  if (isGroup) {
+    const names = typers.map((uid) => (profileOf(uid) || {}).name || "alguém");
+    const label = document.createElement("span");
+    label.className = "typing-names";
+    label.textContent =
+      names.length === 1
+        ? `${names[0]} está digitando…`
+        : `${names.slice(0, 2).join(", ")}${names.length > 2 ? " e mais" : ""} estão digitando…`;
+    typingIndicator.appendChild(label);
+  }
+
+  typingIndicator.classList.remove("hidden");
 }
 
 function renderPeerPresence() {
@@ -1433,6 +1781,7 @@ function renderPeerPresence() {
 
 btnChatMenu.addEventListener("click", (e) => {
   e.stopPropagation();
+  setMenuItemText(btnArchiveChat, activeChatId && isArchived(activeChatId) ? "Desarquivar conversa" : "Arquivar conversa");
   chatMenu.classList.toggle("hidden");
 });
 
@@ -1442,13 +1791,26 @@ document.addEventListener("click", (e) => {
   chatMenu.classList.add("hidden");
 });
 
-[btnParticipants, btnChatInvite, btnToggleEphemeral, btnClearChat, btnLeave].forEach((b) => {
+[btnChatInvite, btnArchiveChat, btnToggleEphemeral, btnClearChat, btnLeave].forEach((b) => {
   b.addEventListener("click", () => chatMenu.classList.add("hidden"));
 });
 
-btnParticipants.addEventListener("click", () => {
-  const chat = chats.get(activeChatId);
-  if (!chat) return;
+// ---------- informações da conversa (foto, nome, convite, participantes) ----------
+
+function setMenuItemText(button, text) {
+  const target = button.querySelector(".chat-menu-text");
+  if (target) target.textContent = text;
+  else button.textContent = text;
+}
+
+let chatInfoIconChoice = null;
+
+function showChatInfoError(msg) {
+  chatInfoError.textContent = msg;
+  chatInfoError.classList.remove("hidden");
+}
+
+function renderParticipants(chat) {
   participantsList.innerHTML = "";
   (chat.memberIds || []).forEach((uid) => {
     const profile = chat.memberProfiles && chat.memberProfiles[uid];
@@ -1480,6 +1842,7 @@ btnParticipants.addEventListener("click", () => {
       btn.addEventListener("click", async () => {
         btn.disabled = true;
         try {
+          participantsModal.classList.add("hidden");
           await openDirectChatWith(uid, profile);
         } catch (err) {
           btn.disabled = false;
@@ -1491,7 +1854,95 @@ btnParticipants.addEventListener("click", () => {
 
     participantsList.appendChild(row);
   });
+}
+
+function openChatInfo() {
+  const chat = chats.get(activeChatId);
+  if (!chat) return;
+  const info = chatDisplayInfo(chat);
+  const isGroup = chat.type === "group";
+  const memberCount = (chat.memberIds || []).length;
+
+  chatInfoError.classList.add("hidden");
+  chatInfoAvatar.src = info.avatarSrc || "";
+  chatInfoTitle.textContent = info.name;
+  chatInfoSubtitle.textContent = isGroup
+    ? `Grupo · ${memberCount} participante${memberCount === 1 ? "" : "s"}`
+    : memberCount < 2
+    ? "Conversa individual · aguardando alguém entrar"
+    : "Conversa individual";
+
+  chatInfoEdit.classList.toggle("hidden", !isGroup);
+  btnChatInfoPhoto.classList.toggle("hidden", !isGroup);
+
+  if (isGroup) {
+    chatInfoNameInput.value = chat.name || "";
+    chatInfoIconChoice = chat.icon || GROUP_ICON_PRESETS[0];
+    buildIconGrid(chatInfoIconGrid, chatInfoIconChoice, (value) => {
+      chatInfoIconChoice = value;
+      chatInfoAvatar.src = groupIconUrl(value);
+    });
+  }
+
+  chatInfoCode.textContent = chat.inviteCode || "——";
+  renderParticipants(chat);
   participantsModal.classList.remove("hidden");
+}
+
+btnChatInfo.addEventListener("click", openChatInfo);
+
+btnChatInfoPhoto.addEventListener("click", () => chatInfoFile.click());
+
+chatInfoFile.addEventListener("change", async () => {
+  const file = chatInfoFile.files && chatInfoFile.files[0];
+  chatInfoFile.value = "";
+  if (!file) return;
+  try {
+    const dataUrl = await resizeImageFile(file, 160, 0.75);
+    chatInfoIconChoice = dataUrl;
+    chatInfoAvatar.src = dataUrl;
+    buildIconGrid(chatInfoIconGrid, dataUrl, (value) => {
+      chatInfoIconChoice = value;
+      chatInfoAvatar.src = groupIconUrl(value);
+    });
+  } catch (err) {
+    showChatInfoError(err.message);
+  }
+});
+
+btnSaveChatInfo.addEventListener("click", async () => {
+  const chat = chats.get(activeChatId);
+  if (!chat || chat.type !== "group") return;
+  const name = chatInfoNameInput.value.trim();
+  if (!name) {
+    showChatInfoError("Dê um nome pro grupo.");
+    return;
+  }
+  chatInfoError.classList.add("hidden");
+  btnSaveChatInfo.disabled = true;
+  try {
+    await updateDoc(doc(db, "chats", chat.id), {
+      name,
+      icon: chatInfoIconChoice || chat.icon || GROUP_ICON_PRESETS[0],
+    });
+    participantsModal.classList.add("hidden");
+  } catch (err) {
+    showChatInfoError("Não foi possível salvar: " + err.message);
+  } finally {
+    btnSaveChatInfo.disabled = false;
+  }
+});
+
+btnChatInfoCopy.addEventListener("click", async () => {
+  const chat = chats.get(activeChatId);
+  if (!chat) return;
+  const link = buildInviteLink(chat.inviteCode);
+  try {
+    await navigator.clipboard.writeText(link);
+    flashText(btnChatInfoCopy, "Link copiado!");
+  } catch (e) {
+    window.prompt("Copie o link do convite:", link);
+  }
 });
 
 btnCloseParticipants.addEventListener("click", () => participantsModal.classList.add("hidden"));
@@ -1524,9 +1975,10 @@ btnInviteBannerCopy.addEventListener("click", async () => {
 });
 
 function flashText(button, text) {
-  const original = button.textContent;
-  button.textContent = text;
-  setTimeout(() => (button.textContent = original), 1500);
+  const target = button.querySelector(".chat-menu-text") || button;
+  const original = target.textContent;
+  target.textContent = text;
+  setTimeout(() => (target.textContent = original), 1500);
 }
 
 // ---------- mensagens (cifradas) ----------
@@ -1534,7 +1986,10 @@ function flashText(button, text) {
 function subscribeToMessages(chatId) {
   if (unsubMessages) unsubMessages();
   messagesEl.innerHTML = "";
-  typingBubbleEl = null;
+  lastDayKey = null;
+  typingSignature = "";
+  typingIndicator.classList.add("hidden");
+  typingIndicator.innerHTML = "";
   decryptedTextCache.clear();
   cancelReply();
   renderedMessageIds = new Set();
@@ -1558,6 +2013,7 @@ function subscribeToMessages(chatId) {
           if (entry) entry.row.remove();
           messageRows.delete(change.doc.id);
           renderedMessageIds.delete(change.doc.id);
+          pruneDayDividers();
         }
       }
     },
@@ -1577,6 +2033,69 @@ function markAsReadIfNeeded(chatId, messageId, data) {
 function formatTime(ts) {
   const d = new Date(ts);
   return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+// ---------- separadores de data entre as mensagens ----------
+
+function dayKeyOf(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function startOfDay(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function formatDayLabel(ts) {
+  const d = new Date(ts);
+  const today = new Date();
+  const diffDays = Math.round((startOfDay(today) - startOfDay(d)) / 86400000);
+
+  if (diffDays === 0) return "Hoje";
+  if (diffDays === 1) return "Ontem";
+  if (diffDays > 1 && diffDays < 7) {
+    return d.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
+  }
+  const sameYear = d.getFullYear() === today.getFullYear();
+  return d.toLocaleDateString(
+    "pt-BR",
+    sameYear ? { day: "numeric", month: "long" } : { day: "numeric", month: "long", year: "numeric" }
+  );
+}
+
+function ensureDayDivider(ts) {
+  const key = dayKeyOf(ts);
+  if (key === lastDayKey) return;
+  lastDayKey = key;
+
+  const divider = document.createElement("div");
+  divider.className = "day-divider";
+  divider.dataset.day = key;
+  const label = document.createElement("span");
+  label.textContent = formatDayLabel(ts);
+  divider.appendChild(label);
+  messagesEl.appendChild(divider);
+}
+
+// Depois que mensagens somem (limpeza ou mensagens temporárias), tira os
+// separadores que ficaram sem nenhuma mensagem embaixo.
+function pruneDayDividers() {
+  const nodes = [...messagesEl.children];
+  nodes.forEach((node, i) => {
+    if (!node.classList.contains("day-divider")) return;
+    let hasMessage = false;
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (nodes[j].classList.contains("day-divider")) break;
+      if (nodes[j].classList.contains("message-row")) {
+        hasMessage = true;
+        break;
+      }
+    }
+    if (!hasMessage) node.remove();
+  });
+
+  const remaining = [...messagesEl.children].filter((n) => n.classList.contains("day-divider"));
+  lastDayKey = remaining.length ? remaining[remaining.length - 1].dataset.day : null;
 }
 
 function isReadByOthers(chat, readBy) {
@@ -1677,8 +2196,8 @@ async function renderMessage(id, data) {
   col.appendChild(bubble);
   row.appendChild(col);
   row.appendChild(replyBtn);
+  ensureDayDivider(data.ts);
   messagesEl.appendChild(row);
-  if (typingBubbleEl) messagesEl.appendChild(typingBubbleEl); // mantém a bolha de "digitando" sempre por último
   messagesEl.scrollTop = messagesEl.scrollHeight;
 
   messageRows.set(id, { row, ticksEl, data });
@@ -1883,6 +2402,62 @@ btnNewChat.addEventListener("click", () => {
   buildGroupIconGrid();
   switchModalTab("direct");
   openModal();
+});
+
+// ---------- barra de navegação, busca e filtros da lista ----------
+
+function openNewChatModal() {
+  buildGroupIconGrid();
+  switchModalTab("direct");
+  openModal();
+}
+
+btnNavNew.addEventListener("click", openNewChatModal);
+btnEmptyNewChat.addEventListener("click", openNewChatModal);
+
+btnNavChats.addEventListener("click", () => {
+  screenApp.classList.remove("showing-chat");
+  setChatFilter("all");
+});
+
+btnNavSearch.addEventListener("click", () => {
+  screenApp.classList.remove("showing-chat");
+  chatSearchInput.focus();
+  chatSearchInput.select();
+});
+
+function setChatFilter(filter) {
+  chatFilter = filter;
+  [...chatFilters.children].forEach((b) => b.classList.toggle("active", b.dataset.filter === filter));
+  renderChatList();
+}
+
+chatFilters.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-filter]");
+  if (!btn) return;
+  setChatFilter(btn.dataset.filter);
+});
+
+chatSearchInput.addEventListener("input", () => {
+  chatSearchTerm = chatSearchInput.value.trim().toLowerCase();
+  btnClearSearch.classList.toggle("hidden", chatSearchTerm === "");
+  renderChatList();
+});
+
+btnClearSearch.addEventListener("click", () => {
+  chatSearchInput.value = "";
+  chatSearchTerm = "";
+  btnClearSearch.classList.add("hidden");
+  renderChatList();
+  chatSearchInput.focus();
+});
+
+btnArchiveChat.addEventListener("click", () => {
+  if (!activeChatId) return;
+  const nowArchived = !isArchived(activeChatId);
+  setArchived(activeChatId, nowArchived);
+  closeActiveChat();
+  screenApp.classList.remove("showing-chat");
 });
 
 btnCloseModal.addEventListener("click", closeModal);
