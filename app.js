@@ -100,8 +100,23 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister())).catch(() => {});
     if (window.caches) caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
   } else {
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloadedForUpdate = false;
+
+    // Quando um service worker novo assume, recarrega uma vez: garante que
+    // HTML, CSS e JS sejam sempre da mesma versão (senão dá pra ficar com um
+    // arquivo velho em cache e o layout quebrar).
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController || reloadedForUpdate) return;
+      reloadedForUpdate = true;
+      location.reload();
+    });
+
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
+      navigator.serviceWorker
+        .register("sw.js")
+        .then((reg) => reg.update())
+        .catch(() => {});
     });
   }
 }

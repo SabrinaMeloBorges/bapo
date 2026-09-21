@@ -1,9 +1,9 @@
-const CACHE_NAME = "bapo-shell-v5";
+const CACHE_NAME = "bapo-shell-v6";
 const SHELL_FILES = [
   "./",
   "./index.html",
-  "./style.css",
-  "./app.js",
+  "./style.css?v=2",
+  "./app.js?v=2",
   "./firebase-config.js",
   "./gif-config.js",
   "./manifest.json",
@@ -14,7 +14,11 @@ const SHELL_FILES = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES)).then(() => self.skipWaiting())
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(SHELL_FILES))
+      .catch(() => {})
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -27,25 +31,30 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Só cuida do "app shell" (arquivos do próprio site). Tudo que é de outro
-// domínio (Firestore, Firebase Auth, avatares do DiceBear) passa direto pela
-// rede — nunca fica em cache, pra não servir mensagem/avatar desatualizado.
+// Rede primeiro: o navegador sempre recebe a versão publicada mais nova, e o
+// cache serve só quando está sem internet. (Antes era o contrário, e dava pra
+// acabar com o HTML novo e o CSS velho ao mesmo tempo — layout quebrado.)
+// Tudo que é de outro domínio (Firestore, Firebase Auth, avatares do DiceBear)
+// passa direto pela rede, sem cache.
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || event.request.method !== "GET") return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return response;
+      })
+      .catch(() =>
+        caches.match(event.request).then((cached) => {
+          if (cached) return cached;
+          if (event.request.mode === "navigate") return caches.match("./index.html");
+          return Response.error();
         })
-        .catch(() => cached);
-      return cached || network;
-    })
+      )
   );
 });
