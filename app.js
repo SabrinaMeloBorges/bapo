@@ -14,6 +14,9 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import {
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   connectFirestoreEmulator,
   collection,
   doc,
@@ -83,7 +86,17 @@ const PURGE_CHECK_INTERVAL_MS = 5 * 60000;
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
+// Cache local em disco (IndexedDB): sem isso, cada vez que uma conversa era
+// aberta o histórico inteiro vinha da rede de novo — com figurinhas grandes
+// dentro das mensagens, isso pesava muito. Com o cache, só o que mudou desce.
+let db;
+try {
+  db = initializeFirestore(app, {
+    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+  });
+} catch (e) {
+  db = getFirestore(app);
+}
 
 if (USE_EMULATOR) {
   connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
@@ -286,8 +299,22 @@ async function decryptText(key, ciphertext, iv) {
   return new TextDecoder().decode(buf);
 }
 
+// A lista de conversas é redesenhada a cada mudança no chat (inclusive quando
+// alguém está digitando), então o texto já decifrado fica guardado por
+// mensagem pra não decifrar de novo a cada redesenho.
+const previewCache = new Map();
+
 async function decryptPreview(chat, lastMessage) {
   if (!lastMessage) return "Nenhuma mensagem ainda";
+  const cacheKey = chat.id + "|" + (lastMessage.ts || 0);
+  if (previewCache.has(cacheKey)) return previewCache.get(cacheKey);
+  const text = await buildPreviewText(chat, lastMessage);
+  previewCache.set(cacheKey, text);
+  if (previewCache.size > 200) previewCache.delete(previewCache.keys().next().value);
+  return text;
+}
+
+async function buildPreviewText(chat, lastMessage) {
   const prefix = lastMessage.senderName ? lastMessage.senderName + ": " : "";
   if (lastMessage.kind === "sticker") return prefix + "🖼️ Figurinha";
   if (lastMessage.kind === "gif") return prefix + "GIF";
@@ -1367,6 +1394,7 @@ function markChatAsRead(chatId, chat) {
 }
 
 function openChat(chatId) {
+  const sameChat = activeChatId === chatId && unsubMessages;
   activeChatId = chatId;
   chatMenu.classList.add("hidden");
   attachPanel.classList.add("hidden");
@@ -1377,7 +1405,7 @@ function openChat(chatId) {
   btnSend.disabled = false;
   const chat = chats.get(chatId);
   updateActiveChatHeader(chat);
-  subscribeToMessages(chatId);
+  if (!sameChat) subscribeToMessages(chatId);
   markChatAsRead(chatId, chat);
   renderChatList();
   messageInput.focus();
@@ -2002,7 +2030,7 @@ function flashText(button, text) {
 // Abrir uma conversa carrega só as últimas mensagens; o resto vem sob demanda
 // pelo botão "Ver mensagens anteriores". Sem isso, um histórico grande
 // travava a tela toda vez que a conversa era aberta.
-const MESSAGE_PAGE_SIZE = 120;
+const MESSAGE_PAGE_SIZE = 60;
 let messageWindow = MESSAGE_PAGE_SIZE;
 let loadMoreBtn = null;
 let scrollAnchorId = null;
@@ -2186,11 +2214,58 @@ function readTooltip(chat, readAt) {
   return "Visto às " + formatTime(Math.max(...times));
 }
 
+function isMediaKind(kind) {
+  return kind === "sticker" || kind === "gif";
+}
+
+// Figurinha/GIF só é decifrado quando chega perto da tela. Assim abrir uma
+// conversa antiga não precisa decifrar e guardar na memória dezenas de imagens
+// que ninguém vai ver.
+let mediaObserver = null;
+
+function getMediaObserver() {
+  if (mediaObserver) return mediaObserver;
+  mediaObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        mediaObserver.unobserve(entry.target);
+        const load = entry.target._loadMedia;
+        if (load) load();
+      });
+    },
+    { root: messagesEl, rootMargin: "400px 0px" }
+  );
+  return mediaObserver;
+}
+
+function observeMedia(img, chat, data) {
+  img._loadMedia = async () => {
+    try {
+      const src = await decryptMessageText(chat, data);
+      if (src && (src.startsWith("data:image") || src.startsWith("http"))) {
+        img.src = src;
+      } else {
+        img.replaceWith(document.createTextNode(src || ""));
+        return;
+      }
+    } catch (e) {
+      /* deixa o espaço vazio: a mensagem continua na conversa */
+    }
+    img.classList.remove("media-pending");
+  };
+  getMediaObserver().observe(img);
+}
+
 // Decifra tudo em paralelo, monta as bolhas num fragmento e insere de uma vez
 // só (antes era uma por uma, com rolagem forçada a cada mensagem).
 async function renderMessages(entries) {
   const chat = chats.get(activeChatId);
-  const contents = await Promise.all(entries.map((e) => decryptMessageText(chat, e.data)));
+  // Figurinhas e GIFs não são decifrados agora: eles carregam sozinhos quando
+  // chegam perto da tela (é o que mais pesava num histórico longo).
+  const contents = await Promise.all(
+    entries.map((e) => (isMediaKind(e.data.kind) ? Promise.resolve(null) : decryptMessageText(chat, e.data)))
+  );
 
   entries.forEach((e, i) => {
     const kind = e.data.kind || "text";
@@ -2252,17 +2327,18 @@ function renderMessage(id, data, content, chat) {
     bubble.appendChild(quote);
   }
 
-  const isValidMediaSrc = (kind === "sticker" || kind === "gif") && (content.startsWith("data:image") || content.startsWith("http"));
-  let quoteLabel = content;
+  const isMedia = isMediaKind(kind);
+  let quoteLabel = isMedia ? (kind === "sticker" ? "🖼️ Figurinha" : "GIF") : content;
 
-  if (isValidMediaSrc) {
+  if (isMedia) {
     bubble.classList.add("bubble-media");
     const img = document.createElement("img");
-    img.className = kind === "sticker" ? "sticker-img" : "gif-img";
-    img.src = content;
+    img.className = (kind === "sticker" ? "sticker-img" : "gif-img") + " media-pending";
+    img.loading = "lazy";
+    img.decoding = "async";
     img.alt = kind === "sticker" ? "Figurinha" : "GIF";
     bubble.appendChild(img);
-    quoteLabel = kind === "sticker" ? "🖼️ Figurinha" : "GIF";
+    observeMedia(img, chat, data);
   } else {
     const textNode = document.createElement("span");
     textNode.textContent = kind === "sticker" ? "🖼️ Figurinha" : kind === "gif" ? "GIF" : content;
@@ -2272,7 +2348,7 @@ function renderMessage(id, data, content, chat) {
   decryptedTextCache.set(id, quoteLabel);
 
   const time = document.createElement("span");
-  time.className = "bubble-time" + (isValidMediaSrc ? " bubble-time-media" : "");
+  time.className = "bubble-time" + (isMedia ? " bubble-time-media" : "");
   time.textContent = formatTime(data.ts);
   bubble.appendChild(time);
 

@@ -1681,6 +1681,15 @@ input.search-input {
   height: auto;
 }
 
+/* espaço reservado enquanto a figurinha/GIF ainda não foi decifrado */
+.media-pending {
+  width: 140px;
+  height: 140px;
+  border-radius: 14px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--border);
+}
+
 .gif-img {
   display: block;
   max-width: 240px;
