@@ -12,7 +12,8 @@ Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 - Botão "Limpar chat" (apaga tudo na hora) e, opcionalmente, "mensagens temporárias" por conversa — quando ativado no menu "⋮" daquela conversa, mensagens com mais de 30 minutos somem sozinhas. Vem desligado por padrão em toda conversa nova.
 - Instalável como app (PWA) — funciona com ícone na tela inicial e abre em janela própria.
 - Cor do tema e modo claro/escuro/sistema são configuráveis pelo ícone de engrenagem.
-- **Figurinhas**: envie uma imagem do computador (botão 🖼️ ao lado do campo de mensagem) e ela vira uma figurinha reutilizável, salva na sua coleção (sincronizada entre aparelhos se você entrar com e-mail/Google). Fundo transparente preservado (PNG).
+- **Figurinhas**: envie uma imagem do computador (botão 🖼️ ao lado do campo de mensagem) e ela vira uma figurinha reutilizável. A coleção fica guardada no próprio aparelho (IndexedDB), então continua lá depois de fechar e abrir o app; quem entra com e-mail/Google também tem uma cópia no Firestore (uma figurinha por documento) pra usar a mesma coleção em qualquer aparelho. Fundo transparente preservado (WebP, ou PNG se o navegador não suportar).
+- **Digitando**: quando alguém está escrevendo, aparecem três pontinhos no canto inferior esquerdo da conversa. Em grupo vem junto a foto e o nome de quem está digitando.
 - **GIFs**: busca de GIFs da internet direto no mesmo painel (aba "GIFs"), usando a API gratuita do GIPHY — exige configurar uma chave própria em `gif-config.js` (veja abaixo).
 
 ### Sobre a criptografia — o que ela cobre e o que não cobre
@@ -20,6 +21,19 @@ Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 Toda conversa (individual ou em grupo) tem uma chave AES-256 própria, gerada na criação e guardada no documento do chat no Firestore. Quem protege essa chave são as regras de segurança do banco — só quem já é membro daquela conversa consegue ler o documento (e portanto a chave). Isso significa que a mesma conversa abre normalmente em qualquer aparelho onde você estiver logado, como em outros apps de mensagens — não existe uma chave "por aparelho" que trave a leitura ao trocar de dispositivo.
 
 Isso protege contra: vazamento do banco de dados, acesso indevido de quem nunca fez parte da conversa, alguém bisbilhotando o Firestore diretamente. Não é o mesmo nível de uma criptografia ponta-a-ponta "com chave embrulhada por pessoa" como fariam apps de mensagens dedicados — qualquer membro de uma conversa sempre teve acesso a ela de qualquer forma, então isso não muda o modelo de confiança dentro do próprio grupo/conversa.
+
+## Layout (v2)
+
+- **Desktop**: três colunas — barra de navegação lateral (vira menu com rótulos em telas ≥1400px), lista de conversas e o painel da conversa ocupando o resto da tela. As mensagens e o campo de escrita ficam num bloco central de até 980px, pra linha não ficar longa demais em monitores largos.
+- **Tablet / telas médias**: as mesmas três colunas, mais estreitas; o botão "Enviar" fica só com o ícone.
+- **Celular (<768px)**: uma coluna só, com barra de abas embaixo (Conversas · Buscar · Nova · Ajustes · perfil). A conversa aberta ocupa a tela inteira com botão de voltar.
+- Breakpoints seguem os mesmos valores do Bootstrap (576 / 768 / 992 / 1200 / 1400px).
+- Estética retrô: tons creme no modo claro, preto suave no escuro, tipografia serifada (Fraunces) nos títulos e textura de papel leve por cima de tudo.
+- A ilustração da marca (`icons/bapo-mark.png`) aparece na tela de boas-vindas, no login e na barra lateral, com o fundo recortado pra funcionar no claro e no escuro. O ícone do app/favicon (`icons/icon-192.png` e `icons/icon-512.png`) é o "b" branco no quadrado índigo.
+- A lista tem **busca por nome**, filtros **Todas / Não lidas / Arquivadas** e a opção "Arquivar conversa" no menu de opções da conversa (o arquivamento fica guardado neste navegador).
+- As mensagens são separadas por dia, como no WhatsApp: "Hoje", "Ontem", o dia da semana com a data ("terça-feira, 15 de setembro") na mesma semana e a data completa nas mais antigas.
+- **Informações da conversa**: toque no nome/foto no topo do chat pra abrir — mostra participantes, código do convite e, em grupos, deixa **trocar o nome e a foto** (enviar uma imagem do computador ou escolher um dos ícones prontos). As mesmas opções aparecem na hora de criar o grupo.
+- O menu "⋮" virou um menu de opções com ícones, separado entre ações do dia a dia e "zona de risco" (limpar mensagens / sair).
 
 ## Rodar localmente
 
@@ -37,6 +51,8 @@ O projeto usa o [emulador do Firebase](https://firebase.google.com/docs/emulator
 
 O arquivo `firebase-config.js` detecta sozinho quando está rodando em `localhost`/`127.0.0.1` e usa o emulador automaticamente; em qualquer outro endereço (como o GitHub Pages) usa o projeto real do Firebase.
 
+Se quiser rodar local **sem subir o emulador** (útil pra olhar o layout — o emulador do Firestore exige Java instalado), abra a página com `?firebase=prod`, por exemplo `http://localhost:3000/?firebase=prod`. A escolha fica guardada no navegador; pra voltar ao emulador, abra com `?firebase=emulator`.
+
 ## Publicar no GitHub Pages
 
 1. Suba os arquivos para a branch `main` do repositório.
@@ -53,6 +69,8 @@ Não há build — é só HTML, CSS e JS puro (o Firebase é carregado via CDN c
 4. Em Configurações do projeto → Geral → Seus apps, registre um app Web e copie o `firebaseConfig`.
 5. Cole esses valores em `PRODUCTION_CONFIG`, no arquivo `firebase-config.js`.
 6. Em Firestore Database → Regras, cole o conteúdo do arquivo `firestore.rules` deste projeto e publique.
+
+> Se o projeto já estava no ar antes da v2, publique as regras de novo: elas ganharam a coleção `stickers/{uid}/items`, usada pra sincronizar as figurinhas entre aparelhos. Sem isso as figurinhas continuam funcionando, só ficam guardadas em cada aparelho.
 
 ## Configurar a busca de GIFs (opcional)
 

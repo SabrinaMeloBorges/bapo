@@ -1,4 +1,4 @@
-const CACHE_NAME = "bapo-shell-v1";
+const CACHE_NAME = "bapo-shell-v5";
 const SHELL_FILES = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const SHELL_FILES = [
   "./firebase-config.js",
   "./gif-config.js",
   "./manifest.json",
+  "./icons/bapo-mark.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
 ];

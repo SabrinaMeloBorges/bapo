@@ -1,5 +1,24 @@
 // Detecta automaticamente se está rodando local (emulador) ou publicado (produção).
-export const USE_EMULATOR = ["localhost", "127.0.0.1"].includes(location.hostname);
+// Dá pra forçar um dos dois abrindo a página com ?firebase=prod ou ?firebase=emulator
+// (a escolha fica guardada no navegador até trocar de novo).
+const isLocal = ["localhost", "127.0.0.1"].includes(location.hostname);
+
+function resolveMode() {
+  try {
+    const forced = new URLSearchParams(location.search).get("firebase");
+    if (forced === "prod" || forced === "emulator") {
+      localStorage.setItem("bapo-firebase-mode", forced);
+      return forced;
+    }
+    return localStorage.getItem("bapo-firebase-mode");
+  } catch (e) {
+    return null;
+  }
+}
+
+const mode = resolveMode();
+
+export const USE_EMULATOR = mode ? mode === "emulator" : isLocal;
 
 // Depois de criar seu projeto em https://console.firebase.google.com, substitua
 // os valores abaixo pelos que aparecem em: Configurações do projeto > Geral >

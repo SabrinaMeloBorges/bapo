@@ -44,9 +44,16 @@ service cloud.firestore {
     }
 
     // Figurinhas próprias, sincronizadas entre aparelhos (só quem entra com e-mail).
+    // Cada figurinha vira um documento em stickers/{uid}/items — assim a coleção
+    // inteira não precisa caber no limite de 1 MiB de um único documento.
     match /stickers/{uid} {
       allow read: if request.auth != null;
       allow write: if request.auth != null && request.auth.uid == uid;
+
+      match /items/{stickerId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && request.auth.uid == uid;
+      }
     }
   }
 }
