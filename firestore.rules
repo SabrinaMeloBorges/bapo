@@ -7,6 +7,29 @@ rules_version = '2';
 // o código consegue se auto-adicionar como membro.
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Quem pode mexer nos ajustes do app (por enquanto, os avatares padrão).
+    // Pra virar admin, crie o documento admins/SEU_UID no Console do Firebase.
+    function isAdmin() {
+      return request.auth != null
+             && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    match /admins/{uid} {
+      allow read: if request.auth != null;
+      allow write: if false; // só pelo Console do Firebase
+    }
+
+    // Avatares padrão que aparecem na criação do perfil.
+    match /settings/{docId} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+
+      match /items/{itemId} {
+        allow read: if request.auth != null;
+        allow write: if isAdmin();
+      }
+    }
+
     match /invites/{code} {
       allow read, create: if request.auth != null;
       allow update, delete: if false;
@@ -31,7 +54,8 @@ service cloud.firestore {
       }
     }
 
-    // Perfil sincronizado entre aparelhos (só usado por quem entra com e-mail).
+    // Perfil público (nome, foto e lista de contatos). Todo mundo lê — é o que
+    // monta o cartão de perfil — mas cada pessoa só escreve no seu.
     match /users/{uid} {
       allow read: if request.auth != null;
       allow write: if request.auth != null && request.auth.uid == uid;
