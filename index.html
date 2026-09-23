@@ -16,7 +16,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,600;0,9..144,700;1,9..144,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=8" />
+<link rel="stylesheet" href="style.css?v=10" />
 </head>
 <body>
 
@@ -133,6 +133,49 @@
 
           <label for="profile-name" class="small-label profile-name-label">Seu nome</label>
           <input id="profile-name" type="text" placeholder="Como quer ser chamado?" maxlength="20" />
+
+          <div id="cover-editor" class="cover-editor hidden">
+            <p class="card-title">Capa do perfil</p>
+            <div id="cover-preview" class="cover-preview profile-card-cover"></div>
+
+            <div id="cover-type" class="segmented">
+              <button type="button" data-cover-type="default">Padrão</button>
+              <button type="button" data-cover-type="color">Cor</button>
+              <button type="button" data-cover-type="gradient">Degradê</button>
+              <button type="button" data-cover-type="image">Imagem / GIF</button>
+            </div>
+
+            <div id="cover-color-fields" class="cover-fields hidden">
+              <div id="cover-presets" class="cover-presets"></div>
+              <div class="cover-color-row">
+                <label class="cover-color-label">
+                  <span id="cover-color-1-label" class="small-label">Cor</span>
+                  <input id="cover-color-1" type="color" value="#6366f1" />
+                </label>
+                <label id="cover-color-2-wrap" class="cover-color-label">
+                  <span class="small-label">Até</span>
+                  <input id="cover-color-2" type="color" value="#ec4899" />
+                </label>
+                <label id="cover-angle-wrap" class="cover-color-label">
+                  <span class="small-label">Direção</span>
+                  <select id="cover-angle">
+                    <option value="90">→</option>
+                    <option value="135">↘</option>
+                    <option value="180">↓</option>
+                    <option value="45">↗</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div id="cover-image-fields" class="cover-fields hidden">
+              <button id="btn-cover-upload" class="btn btn-secondary btn-upload-photo" type="button">Enviar imagem ou GIF do aparelho</button>
+              <input id="cover-file-input" type="file" accept="image/*" class="hidden" />
+              <p class="muted small">GIFs acima de 600 KB são convertidos automaticamente (continuam animados). Imagens também são reduzidas.</p>
+            </div>
+
+            <p id="cover-error" class="error hidden" role="alert"></p>
+          </div>
 
           <button id="btn-profile-continue" class="btn btn-primary profile-continue" type="button" disabled>Continuar</button>
         </div>
@@ -353,7 +396,7 @@
   <!-- Modal: cartão de perfil (foto, apelido, números e contatos) -->
   <div id="profile-card-modal" class="modal-overlay hidden">
     <div class="modal profile-card">
-      <div class="profile-card-cover"></div>
+      <div id="profile-card-cover" class="profile-card-cover"></div>
 
       <div class="profile-card-avatar-wrap">
         <img id="profile-card-avatar" class="profile-card-avatar" alt="" />
@@ -485,6 +528,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=8"></script>
+  <script type="module" src="app.js?v=11"></script>
 </body>
 </html>

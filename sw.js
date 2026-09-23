@@ -1,9 +1,9 @@
-const CACHE_NAME = "bapo-shell-v12";
+const CACHE_NAME = "bapo-shell-v15";
 const SHELL_FILES = [
   "./",
   "./index.html",
-  "./style.css?v=8",
-  "./app.js?v=8",
+  "./style.css?v=10",
+  "./app.js?v=11",
   "./firebase-config.js",
   "./gif-config.js",
   "./manifest.json",

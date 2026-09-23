@@ -2866,6 +2866,93 @@ body:has(#screen-app:not(.hidden)) .settings-panel {
   font-size: 0.88rem;
 }
 
+.cover-editor {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cover-editor .card-title {
+  margin-bottom: 0;
+}
+
+.cover-preview.profile-card-cover {
+  margin: 0;
+  height: 110px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border);
+}
+
+.cover-editor .segmented {
+  flex-wrap: wrap;
+  border-radius: var(--radius-sm);
+}
+
+.cover-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cover-fields.hidden {
+  display: none;
+}
+
+.cover-presets {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+}
+
+.cover-preset {
+  aspect-ratio: 1;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.cover-preset:hover {
+  border-color: var(--primary);
+}
+
+.cover-color-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cover-color-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 80px;
+}
+
+.cover-color-label.hidden {
+  display: none;
+}
+
+.cover-color-label input[type="color"] {
+  width: 100%;
+  height: 40px;
+  padding: 2px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.cover-color-label select {
+  height: 40px;
+}
+
+.cover-editor .muted.small {
+  margin: 0;
+}
+
 /* --- avatares padrão (admin) --- */
 
 .admin-avatar-grid {
