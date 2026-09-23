@@ -42,8 +42,10 @@ import { GIPHY_API_KEY } from "./gif-config.js";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem O/0/I/1 pra evitar confusão
 
-const AVATAR_SEEDS = ["Felix", "Aneka", "Milo", "Zoe", "Leo", "Nala", "Max", "Luna", "Coco", "Ivy", "Rex", "Mia"];
-const AVATAR_STYLE = "adventurer";
+// Avatares padrão do bapo (o gatinho). Quem quiser usa uma foto do aparelho.
+const AVATAR_PRESETS = ["cat:1", "cat:2"];
+const DEFAULT_AVATAR = AVATAR_PRESETS[0];
+const AVATAR_STYLE = "adventurer"; // só pra abrir avatares antigos, de antes do gatinho
 
 const GROUP_ICON_STYLE = "icons"; // estilo antigo, mantido pra grupos criados antes
 const GROUP_ICON_BACKGROUNDS = "f6c89f,f4a09c,f7d08a,a8d5b5,9ec7e8,c9b6e4,e9b7ce,bfd8bd";
@@ -140,8 +142,9 @@ const el = (id) => document.getElementById(id);
 // Um avatar pessoal pode ser um "seed" (ilustração gerada) ou uma foto
 // enviada pelo usuário, guardada como data URL (base64) direto no perfil.
 function resolveAvatarSrc(value) {
-  if (!value) return "";
+  if (!value) return "icons/avatar-cat-1.png";
   if (value.startsWith("data:image")) return value;
+  if (value.startsWith("cat:")) return `icons/avatar-cat-${value.slice(4)}.png`;
   return `https://api.dicebear.com/9.x/${AVATAR_STYLE}/svg?seed=${encodeURIComponent(value)}&size=80`;
 }
 
@@ -193,6 +196,46 @@ function toSmallestImageDataUrl(canvas) {
     if (webp.startsWith("data:image/webp") && webp.length < png.length) return webp;
   } catch (e) {}
   return png;
+}
+
+const PHOTO_MAX_SIZE = 1280;
+const PHOTO_MAX_CHARS = 480 * 1024;
+
+function resizePhotoFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let maxSide = PHOTO_MAX_SIZE;
+      while (maxSide >= 320) {
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        for (const quality of [0.82, 0.7, 0.58, 0.46]) {
+          const dataUrl = canvas.toDataURL("image/jpeg", quality);
+          if (dataUrl.length <= PHOTO_MAX_CHARS) {
+            resolve(dataUrl);
+            return;
+          }
+        }
+        maxSide = Math.round(maxSide * 0.75);
+      }
+      reject(new Error("Essa foto ficou grande demais mesmo depois de reduzida."));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Não foi possível ler essa imagem."));
+    };
+    img.src = url;
+  });
 }
 
 // Diferente da foto de perfil (recortada em quadrado, JPEG): figurinha
@@ -316,8 +359,7 @@ async function decryptPreview(chat, lastMessage) {
 
 async function buildPreviewText(chat, lastMessage) {
   const prefix = lastMessage.senderName ? lastMessage.senderName + ": " : "";
-  if (lastMessage.kind === "sticker") return prefix + "🖼️ Figurinha";
-  if (lastMessage.kind === "gif") return prefix + "GIF";
+  if (isMediaKind(lastMessage.kind)) return prefix + mediaLabel(lastMessage.kind);
   const key = await getChatKey(chat);
   if (!key) return prefix + "🔒";
   try {
@@ -352,6 +394,12 @@ const screenApp = el("screen-app");
 
 const avatarGrid = el("avatar-grid");
 const btnAvatarUpload = el("btn-avatar-upload");
+const btnUploadPhoto = el("btn-upload-photo");
+const avatarPreview = el("avatar-preview");
+const adminAvatars = el("admin-avatars");
+const adminAvatarGrid = el("admin-avatar-grid");
+const btnAdminAvatarAdd = el("btn-admin-avatar-add");
+const adminAvatarFile = el("admin-avatar-file");
 const avatarFileInput = el("avatar-file-input");
 const profileNameInput = el("profile-name");
 const btnProfileContinue = el("btn-profile-continue");
@@ -397,6 +445,11 @@ const replyPreviewBody = el("reply-preview-body");
 const btnCancelReply = el("btn-cancel-reply");
 
 const btnAttach = el("btn-attach");
+const btnPhoto = el("btn-photo");
+const photoFileInput = el("photo-file-input");
+const photoViewer = el("photo-viewer");
+const photoViewerImg = el("photo-viewer-img");
+const btnClosePhotoViewer = el("btn-close-photo-viewer");
 const attachPanel = el("attach-panel");
 const attachTabs = el("attach-tabs");
 const tabStickersPanel = el("tab-stickers");
@@ -435,6 +488,24 @@ const btnChatInfoCopy = el("btn-chat-info-copy");
 const chatInfoError = el("chat-info-error");
 const groupIconFile = el("group-icon-file");
 
+const profileCardModal = el("profile-card-modal");
+const profileCardAvatar = el("profile-card-avatar");
+const profileCardName = el("profile-card-name");
+const profileCardHandle = el("profile-card-handle");
+const btnProfileCardAction = el("btn-profile-card-action");
+const btnProfileCardCta = el("btn-profile-card-cta");
+const profileCardCtaText = el("profile-card-cta-text");
+const profileCardError = el("profile-card-error");
+const btnCloseProfileCard = el("btn-close-profile-card");
+const statChatsValue = el("stat-chats-value");
+const statChatsLabel = el("stat-chats-label");
+const statGroupsValue = el("stat-groups-value");
+const statGroupsLabel = el("stat-groups-label");
+const statContacts = el("stat-contacts");
+const statContactsValue = el("stat-contacts-value");
+const profileCardContacts = el("profile-card-contacts");
+const contactsList = el("contacts-list");
+
 const modalOverlay = el("new-chat-modal");
 const modalTabs = el("modal-tabs");
 const tabDirect = el("tab-direct");
@@ -449,6 +520,8 @@ const joinCodeInput = el("join-code-input");
 const modalError = el("modal-error");
 const btnCloseModal = el("btn-close-modal");
 
+const btnCopyUid = el("btn-copy-uid");
+const myUidEl = el("my-uid");
 const settingsFab = el("settings-fab");
 const btnSettingsSidebar = el("btn-settings-sidebar");
 const settingsPanel = el("settings-panel");
@@ -466,7 +539,7 @@ const toastContainer = el("toast-container");
 let myProfile = null;
 let myUid = null;
 let pendingInvite = null;
-let selectedAvatarSeed = AVATAR_SEEDS[0];
+let selectedAvatarSeed = DEFAULT_AVATAR;
 let selectedGroupIcon = GROUP_ICON_PRESETS[0];
 let myStickers = [];
 let gifSearchDebounce = null;
@@ -679,6 +752,7 @@ let bootStarted = false;
 onAuthStateChanged(auth, (user) => {
   if (user) {
     myUid = user.uid;
+    myUidEl.textContent = user.uid;
     authReadyResolve(user);
     btnLogout.classList.toggle("hidden", user.isAnonymous);
     btnLinkGoogle.classList.toggle("hidden", !user.isAnonymous);
@@ -716,11 +790,18 @@ async function saveProfile(profile) {
   try {
     localStorage.setItem("bapo-profile", JSON.stringify(profile));
   } catch (e) {}
-  if (auth.currentUser && !auth.currentUser.isAnonymous) {
-    try {
-      await setDoc(doc(db, "users", myUid), profile);
-    } catch (e) {}
-  }
+
+  // O perfil público (nome + foto) fica em users/{uid} pra qualquer pessoa da
+  // conversa conseguir abrir o cartão de perfil. O merge preserva a lista de
+  // contatos, que mora no mesmo documento.
+  try {
+    await setDoc(
+      doc(db, "users", myUid),
+      { name: profile.name, avatar: profile.avatar, updatedAt: Date.now() },
+      { merge: true }
+    );
+  } catch (e) {}
+  userProfileCache.delete(myUid);
 }
 
 // ---------- figurinhas próprias ----------
@@ -975,12 +1056,12 @@ stickerFileInput.addEventListener("change", async () => {
 
 function buildAvatarGrid() {
   avatarGrid.innerHTML = "";
-  AVATAR_SEEDS.forEach((seed) => {
+  avatarOptions().forEach((seed) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "avatar-option";
     btn.dataset.seed = seed;
-    btn.setAttribute("aria-label", "Avatar " + seed);
+    btn.setAttribute("aria-label", "Gatinho " + seed.slice(4));
 
     const img = document.createElement("img");
     img.src = resolveAvatarSrc(seed);
@@ -992,6 +1073,7 @@ function buildAvatarGrid() {
       [...avatarGrid.children].forEach((c) => c.classList.remove("selected"));
       btn.classList.add("selected");
       resetUploadTilePreview();
+      setAvatarPreview(seed);
       updateProfileContinueState();
     });
 
@@ -1029,6 +1111,7 @@ avatarFileInput.addEventListener("change", async () => {
     selectedAvatarSeed = dataUrl;
     [...avatarGrid.querySelectorAll(".avatar-option[data-seed]")].forEach((c) => c.classList.remove("selected"));
     setUploadTilePreview(dataUrl);
+    setAvatarPreview(dataUrl);
     updateProfileContinueState();
   } catch (err) {
     window.alert(err.message);
@@ -1102,7 +1185,12 @@ function updateProfileContinueState() {
   btnProfileContinue.disabled = !profileNameInput.value.trim();
 }
 
+function setAvatarPreview(value) {
+  avatarPreview.src = resolveAvatarSrc(value);
+}
+
 function selectAvatarInGrid(seed) {
+  setAvatarPreview(seed);
   const isUpload = seed && seed.startsWith("data:image");
   [...avatarGrid.querySelectorAll(".avatar-option[data-seed]")].forEach((c) => c.classList.toggle("selected", !isUpload && c.dataset.seed === seed));
   if (isUpload) setUploadTilePreview(seed);
@@ -1122,7 +1210,7 @@ function showProfileScreen(prefill) {
     selectedAvatarSeed = prefill.avatar;
   } else {
     profileNameInput.value = "";
-    selectedAvatarSeed = AVATAR_SEEDS[Math.floor(Math.random() * AVATAR_SEEDS.length)];
+    selectedAvatarSeed = defaultAvatarValue();
   }
   selectAvatarInGrid(selectedAvatarSeed);
   updateProfileContinueState();
@@ -1171,13 +1259,15 @@ async function propagateProfileToChats(profile) {
 }
 
 btnEditProfile.addEventListener("click", () => {
-  showProfileScreen(myProfile);
+  if (screenApp.classList.contains("hidden")) showProfileScreen(myProfile);
+  else openProfileCard(myUid);
 });
 
 // ---------- app principal ----------
 
 async function boot() {
   const profile = await loadProfile();
+  subscribeToDefaultAvatars();
 
   const params = new URLSearchParams(window.location.search);
   const invited = params.get("convite") ? params.get("convite").trim().toUpperCase() : null;
@@ -1204,6 +1294,8 @@ async function enterApp() {
   settingsFab.classList.add("hidden");
   await authReady;
   subscribeToChatList();
+  subscribeToMyUserDoc();
+  checkAdmin();
   startPresenceHeartbeat();
   startAutoPurge();
   loadStickers().then((list) => {
@@ -1416,6 +1508,7 @@ function openChat(chatId) {
   screenApp.classList.add("showing-chat");
   messageInput.disabled = false;
   btnSend.disabled = false;
+  btnPhoto.disabled = false;
   const chat = chats.get(chatId);
   updateActiveChatHeader(chat);
   if (!sameChat) subscribeToMessages(chatId);
@@ -1440,6 +1533,7 @@ function closeActiveChat() {
   screenApp.classList.remove("showing-chat");
   messageInput.disabled = true;
   btnSend.disabled = true;
+  btnPhoto.disabled = true;
   renderChatList();
 }
 
@@ -1482,6 +1576,7 @@ function updateActiveChatHeader(chat) {
   if (waitingForPeer) inviteBannerCode.textContent = chat.inviteCode;
   messageInput.disabled = waitingForPeer;
   btnSend.disabled = waitingForPeer;
+  btnPhoto.disabled = waitingForPeer;
 
   ephemeralStateEl.textContent = chat.ephemeral ? "ativadas" : "desativadas";
   ephemeralIcon.classList.toggle("hidden", !chat.ephemeral);
@@ -1891,7 +1986,13 @@ function renderParticipants(chat) {
   (chat.memberIds || []).forEach((uid) => {
     const profile = chat.memberProfiles && chat.memberProfiles[uid];
     const row = document.createElement("div");
-    row.className = "participant-row";
+    row.className = "participant-row clickable";
+    row.title = "Ver perfil";
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".participant-action")) return;
+      participantsModal.classList.add("hidden");
+      openProfileCard(uid, profile);
+    });
 
     const avatar = document.createElement("img");
     avatar.className = "participant-avatar";
@@ -2247,7 +2348,14 @@ function readTooltip(chat, readAt) {
 }
 
 function isMediaKind(kind) {
-  return kind === "sticker" || kind === "gif";
+  return kind === "sticker" || kind === "gif" || kind === "photo";
+}
+
+function mediaLabel(kind) {
+  if (kind === "sticker") return "🖼️ Figurinha";
+  if (kind === "gif") return "GIF";
+  if (kind === "photo") return "📷 Foto";
+  return "";
 }
 
 // Figurinha/GIF só é decifrado quando chega perto da tela. Assim abrir uma
@@ -2302,7 +2410,7 @@ async function renderMessages(entries) {
   entries.forEach((e, i) => {
     const kind = e.data.kind || "text";
     const content = contents[i];
-    decryptedTextCache.set(e.id, kind === "sticker" ? "🖼️ Figurinha" : kind === "gif" ? "GIF" : content);
+    decryptedTextCache.set(e.id, isMediaKind(kind) ? mediaLabel(kind) : content);
   });
 
   const frag = document.createDocumentFragment();
@@ -2360,20 +2468,25 @@ function renderMessage(id, data, content, chat) {
   }
 
   const isMedia = isMediaKind(kind);
-  let quoteLabel = isMedia ? (kind === "sticker" ? "🖼️ Figurinha" : "GIF") : content;
+  let quoteLabel = isMedia ? mediaLabel(kind) : content;
 
   if (isMedia) {
     bubble.classList.add("bubble-media");
     const img = document.createElement("img");
-    img.className = (kind === "sticker" ? "sticker-img" : "gif-img") + " media-pending";
+    img.className = (kind === "sticker" ? "sticker-img" : kind === "photo" ? "photo-img" : "gif-img") + " media-pending";
     img.loading = "lazy";
     img.decoding = "async";
-    img.alt = kind === "sticker" ? "Figurinha" : "GIF";
+    img.alt = kind === "sticker" ? "Figurinha" : kind === "photo" ? "Foto" : "GIF";
+    if (kind === "photo") {
+      img.addEventListener("click", () => {
+        if (img.src) openPhotoViewer(img.src);
+      });
+    }
     bubble.appendChild(img);
     observeMedia(img, chat, data);
   } else {
     const textNode = document.createElement("span");
-    textNode.textContent = kind === "sticker" ? "🖼️ Figurinha" : kind === "gif" ? "GIF" : content;
+    textNode.textContent = content;
     bubble.appendChild(textNode);
   }
 
@@ -2561,7 +2674,10 @@ async function sendChatMessage(content, kind = "text") {
     if (replySnapshot) msgData.replyTo = { messageId: replySnapshot.messageId, senderName: replySnapshot.senderName };
     await addDoc(collection(chatRef, "messages"), msgData);
     const chatUpdate = {
-      lastMessage: { ciphertext, iv, senderName: myProfile.name, senderId: myUid, ts, kind },
+      lastMessage:
+        kind === "photo"
+          ? { senderName: myProfile.name, senderId: myUid, ts, kind }
+          : { ciphertext, iv, senderName: myProfile.name, senderId: myUid, ts, kind },
       [`typing.${myUid}`]: 0,
     };
     (chat.memberIds || [])
@@ -2583,6 +2699,55 @@ messageForm.addEventListener("submit", async (e) => {
   if (!text || !activeChatId) return;
   messageInput.value = "";
   await sendChatMessage(text, "text");
+});
+
+async function sendPhotoFiles(files) {
+  const images = [...files].filter((f) => f.type.startsWith("image/"));
+  if (!images.length || !activeChatId || btnPhoto.disabled) return;
+  for (const file of images) {
+    try {
+      const dataUrl = await resizePhotoFile(file);
+      await sendChatMessage(dataUrl, "photo");
+    } catch (err) {
+      showAppError(err.message);
+    }
+  }
+}
+
+btnPhoto.addEventListener("click", () => photoFileInput.click());
+
+photoFileInput.addEventListener("change", async () => {
+  const files = [...photoFileInput.files];
+  photoFileInput.value = "";
+  await sendPhotoFiles(files);
+});
+
+document.addEventListener("paste", async (e) => {
+  if (!activeChatId || activeChatEl.classList.contains("hidden")) return;
+  const target = e.target;
+  if (target !== messageInput && target instanceof HTMLElement && target.closest("input, textarea, [contenteditable]")) return;
+  const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+  if (!files.length) return;
+  e.preventDefault();
+  await sendPhotoFiles(files);
+});
+
+function openPhotoViewer(src) {
+  photoViewerImg.src = src;
+  photoViewer.classList.remove("hidden");
+}
+
+function closePhotoViewer() {
+  photoViewer.classList.add("hidden");
+  photoViewerImg.removeAttribute("src");
+}
+
+btnClosePhotoViewer.addEventListener("click", closePhotoViewer);
+photoViewer.addEventListener("click", (e) => {
+  if (e.target === photoViewer) closePhotoViewer();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !photoViewer.classList.contains("hidden")) closePhotoViewer();
 });
 
 // ---------- modal: nova conversa / grupo / entrar com código ----------
@@ -2808,6 +2973,7 @@ document.addEventListener("keydown", (e) => {
     settingsPanel.classList.add("hidden");
     if (!modalOverlay.classList.contains("hidden")) closeModal();
     participantsModal.classList.add("hidden");
+    profileCardModal.classList.add("hidden");
     chatMenu.classList.add("hidden");
     attachPanel.classList.add("hidden");
   }
@@ -2964,3 +3130,337 @@ function initNotifSettings() {
 buildColorSwatches();
 applyAppearance();
 initNotifSettings();
+
+// ---------- cartão de perfil (foto, números e contatos) ----------
+
+let myContacts = [];
+let unsubMyUser = null;
+let profileCardUid = null;
+const userProfileCache = new Map();
+
+function subscribeToMyUserDoc() {
+  if (unsubMyUser) unsubMyUser();
+  unsubMyUser = onSnapshot(
+    doc(db, "users", myUid),
+    (snap) => {
+      const data = snap.exists() ? snap.data() : null;
+      myContacts = data && Array.isArray(data.contacts) ? [...new Set(data.contacts)] : [];
+      if (!profileCardModal.classList.contains("hidden") && profileCardUid) {
+        updateProfileCardAction();
+      }
+    },
+    () => {}
+  );
+}
+
+async function fetchUserProfile(uid, { fresh = false } = {}) {
+  if (!fresh && userProfileCache.has(uid)) return userProfileCache.get(uid);
+  try {
+    const snap = await getDoc(doc(db, "users", uid));
+    const data = snap.exists() ? snap.data() : null;
+    userProfileCache.set(uid, data);
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Nome de usuário mostrado no cartão (só visual, feito a partir do nome).
+function handleFor(name, uid) {
+  const slug = (name || "pessoa")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, 14);
+  return "@" + (slug || "pessoa") + "_" + String(uid || "").slice(0, 3);
+}
+
+// Perfil conhecido de alguém: o que veio das conversas serve de base enquanto
+// o documento público não chega.
+function knownProfileOf(uid) {
+  if (uid === myUid) return myProfile;
+  for (const chat of chats.values()) {
+    const profile = chat.memberProfiles && chat.memberProfiles[uid];
+    if (profile) return profile;
+  }
+  return null;
+}
+
+function profileStats(uid) {
+  const isMe = uid === myUid;
+  let direct = 0;
+  let groups = 0;
+  chats.forEach((chat) => {
+    const ids = chat.memberIds || [];
+    if (!ids.includes(uid)) return;
+    if (!isMe && !ids.includes(myUid)) return;
+    if (chat.type === "group") groups += 1;
+    else direct += 1;
+  });
+  return { direct, groups };
+}
+
+function updateProfileCardAction() {
+  const isMe = profileCardUid === myUid;
+
+  if (isMe) {
+    btnProfileCardAction.textContent = "Editar";
+    btnProfileCardAction.classList.remove("is-active");
+    profileCardCtaText.textContent = profileCardContacts.classList.contains("hidden")
+      ? "Ver meus contatos"
+      : "Esconder contatos";
+    statContactsValue.textContent = String(myContacts.length);
+    return;
+  }
+
+  const saved = myContacts.includes(profileCardUid);
+  btnProfileCardAction.textContent = saved ? "Nos contatos" : "Adicionar";
+  btnProfileCardAction.classList.toggle("is-active", saved);
+  profileCardCtaText.textContent = findDirectChatWith(profileCardUid) ? "Abrir conversa" : "Enviar mensagem";
+}
+
+async function openProfileCard(uid, fallbackProfile) {
+  profileCardUid = uid;
+  profileCardError.classList.add("hidden");
+  profileCardContacts.classList.add("hidden");
+
+  const isMe = uid === myUid;
+  const base = fallbackProfile || knownProfileOf(uid) || {};
+  const stats = profileStats(uid);
+
+  profileCardAvatar.src = resolveAvatarSrc(base.avatar) || "";
+  profileCardName.textContent = base.name || "Pessoa";
+  profileCardHandle.textContent = handleFor(base.name, uid);
+  statChatsValue.textContent = String(stats.direct);
+  statGroupsValue.textContent = String(stats.groups);
+  statChatsLabel.textContent = isMe ? "Conversas" : "Conversas juntos";
+  statGroupsLabel.textContent = isMe ? "Grupos" : "Grupos juntos";
+  statContactsValue.textContent = isMe ? String(myContacts.length) : "—";
+
+  updateProfileCardAction();
+  profileCardModal.classList.remove("hidden");
+
+  // o documento público refina nome/foto e traz quantos contatos a pessoa tem
+  const data = await fetchUserProfile(uid, { fresh: true });
+  if (profileCardUid !== uid) return;
+  if (data) {
+    if (data.name) profileCardName.textContent = data.name;
+    if (data.avatar) profileCardAvatar.src = resolveAvatarSrc(data.avatar);
+    profileCardHandle.textContent = handleFor(data.name || base.name, uid);
+    if (!isMe) statContactsValue.textContent = String((data.contacts || []).length);
+  } else if (!isMe) {
+    statContactsValue.textContent = "0";
+  }
+}
+
+async function toggleContact(uid) {
+  const saved = myContacts.includes(uid);
+  try {
+    await setDoc(
+      doc(db, "users", myUid),
+      { contacts: saved ? arrayRemove(uid) : arrayUnion(uid) },
+      { merge: true }
+    );
+    // a lista é atualizada pelo onSnapshot do próprio documento; mexer nela
+    // aqui duplicava o contato (a escrita local já dispara o snapshot)
+    updateProfileCardAction();
+  } catch (err) {
+    profileCardError.textContent = "Não foi possível salvar o contato: " + err.message;
+    profileCardError.classList.remove("hidden");
+  }
+}
+
+async function renderContactsList() {
+  contactsList.innerHTML = "";
+  if (!myContacts.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted small";
+    empty.textContent = "Você ainda não adicionou ninguém. Abra o perfil de alguém e toque em “Adicionar”.";
+    contactsList.appendChild(empty);
+    return;
+  }
+
+  for (const uid of myContacts) {
+    const row = document.createElement("div");
+    row.className = "participant-row";
+
+    const avatar = document.createElement("img");
+    avatar.className = "participant-avatar";
+    avatar.alt = "";
+    row.appendChild(avatar);
+
+    const name = document.createElement("span");
+    name.className = "participant-name";
+    name.textContent = "…";
+    row.appendChild(name);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "participant-action";
+    btn.textContent = findDirectChatWith(uid) ? "Abrir conversa" : "Enviar mensagem";
+    row.appendChild(btn);
+
+    contactsList.appendChild(row);
+
+    const known = knownProfileOf(uid);
+    const data = (await fetchUserProfile(uid)) || known || {};
+    name.textContent = data.name || "Pessoa";
+    if (data.avatar) avatar.src = resolveAvatarSrc(data.avatar);
+
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        profileCardModal.classList.add("hidden");
+        await openDirectChatWith(uid, { name: data.name, avatar: data.avatar });
+      } catch (err) {
+        btn.disabled = false;
+        showAppError("Não foi possível abrir a conversa: " + err.message);
+      }
+    });
+  }
+}
+
+btnProfileCardAction.addEventListener("click", () => {
+  if (profileCardUid === myUid) {
+    profileCardModal.classList.add("hidden");
+    showProfileScreen(myProfile);
+    return;
+  }
+  toggleContact(profileCardUid);
+});
+
+btnProfileCardCta.addEventListener("click", async () => {
+  if (profileCardUid === myUid) {
+    const showing = profileCardContacts.classList.toggle("hidden");
+    if (!showing) await renderContactsList();
+    updateProfileCardAction();
+    return;
+  }
+  const profile = knownProfileOf(profileCardUid) || {};
+  try {
+    profileCardModal.classList.add("hidden");
+    await openDirectChatWith(profileCardUid, profile);
+  } catch (err) {
+    showAppError("Não foi possível abrir a conversa: " + err.message);
+  }
+});
+
+statContacts.addEventListener("click", async () => {
+  if (profileCardUid !== myUid) return;
+  const showing = profileCardContacts.classList.toggle("hidden");
+  if (!showing) await renderContactsList();
+  updateProfileCardAction();
+});
+
+btnCloseProfileCard.addEventListener("click", () => profileCardModal.classList.add("hidden"));
+profileCardModal.addEventListener("click", (e) => {
+  if (e.target === profileCardModal) profileCardModal.classList.add("hidden");
+});
+
+// ---------- avatares padrão (gerenciados por quem é admin) ----------
+//
+// Ficam em settings/avatars/items no Firestore: qualquer pessoa lê, só quem
+// está listado em admins/{uid} pode escrever (ver firestore.rules). Enquanto
+// não houver nenhum, valem os gatinhos que vêm com o app.
+
+let defaultAvatars = []; // [{ id, dataUrl }]
+let isAdmin = false;
+
+function avatarOptions() {
+  const uploaded = defaultAvatars.map((a) => a.dataUrl);
+  return uploaded.length ? uploaded : AVATAR_PRESETS;
+}
+
+function defaultAvatarValue() {
+  return defaultAvatars.length ? defaultAvatars[0].dataUrl : DEFAULT_AVATAR;
+}
+
+function subscribeToDefaultAvatars() {
+  onSnapshot(
+    query(collection(db, "settings", "avatars", "items"), orderBy("createdAt")),
+    (snap) => {
+      defaultAvatars = snap.docs.map((d) => ({ id: d.id, dataUrl: d.data().dataUrl }));
+      if (!screenProfile.classList.contains("hidden")) {
+        buildAvatarGrid();
+        selectAvatarInGrid(selectedAvatarSeed);
+      }
+      if (isAdmin) renderAdminAvatarGrid();
+    },
+    () => {}
+  );
+}
+
+async function checkAdmin() {
+  try {
+    const snap = await getDoc(doc(db, "admins", myUid));
+    isAdmin = snap.exists();
+  } catch (e) {
+    isAdmin = false;
+  }
+  adminAvatars.classList.toggle("hidden", !isAdmin);
+  if (isAdmin) renderAdminAvatarGrid();
+}
+
+function renderAdminAvatarGrid() {
+  [...adminAvatarGrid.querySelectorAll(".admin-avatar-tile")].forEach((n) => n.remove());
+
+  defaultAvatars.forEach((avatar) => {
+    const tile = document.createElement("div");
+    tile.className = "admin-avatar-tile";
+
+    const img = document.createElement("img");
+    img.src = avatar.dataUrl;
+    img.alt = "";
+    tile.appendChild(img);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "btn-remove-sticker";
+    remove.title = "Tirar dos padrões";
+    remove.textContent = "✕";
+    remove.addEventListener("click", async () => {
+      remove.disabled = true;
+      try {
+        await deleteDoc(doc(db, "settings", "avatars", "items", avatar.id));
+      } catch (err) {
+        remove.disabled = false;
+        showAppError("Não foi possível remover: " + err.message);
+      }
+    });
+    tile.appendChild(remove);
+
+    adminAvatarGrid.insertBefore(tile, btnAdminAvatarAdd);
+  });
+}
+
+btnAdminAvatarAdd.addEventListener("click", () => adminAvatarFile.click());
+
+adminAvatarFile.addEventListener("change", async () => {
+  const file = adminAvatarFile.files && adminAvatarFile.files[0];
+  adminAvatarFile.value = "";
+  if (!file) return;
+  try {
+    const dataUrl = await resizeImageFile(file, 256, 0.82);
+    await setDoc(doc(collection(db, "settings", "avatars", "items")), {
+      dataUrl,
+      createdAt: Date.now(),
+      createdBy: myUid,
+    });
+  } catch (err) {
+    showAppError("Não foi possível subir o avatar: " + err.message);
+  }
+});
+
+btnUploadPhoto.addEventListener("click", () => avatarFileInput.click());
+
+
+btnCopyUid.addEventListener("click", async () => {
+  if (!myUid) return;
+  try {
+    await navigator.clipboard.writeText(myUid);
+    flashText(btnCopyUid, "ID copiado!");
+  } catch (e) {
+    window.prompt("Seu ID:", myUid);
+  }
+});

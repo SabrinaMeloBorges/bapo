@@ -4,7 +4,7 @@ Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 
 ## Como funciona
 
-- Cada pessoa escolhe um avatar (ou envia uma foto), um nome, e opcionalmente entra com e-mail/senha pra acessar os mesmos contatos em qualquer aparelho (sem conta, funciona só naquele navegador).
+- Quem cria o perfil já começa com o gatinho do bapo como foto (ou escolhe a outra variação), e pode enviar uma foto do próprio aparelho. Depois é só o nome, e opcionalmente entrar com e-mail/senha pra acessar os mesmos contatos em qualquer aparelho (sem conta, funciona só naquele navegador).
 - Pela barra lateral dá pra criar uma conversa individual, criar um grupo (com nome e ícone) ou entrar em uma já existente com um código de convite.
 - Várias conversas ficam abertas ao mesmo tempo na barra lateral — dá pra trocar entre elas sem perder nada.
 - **Mensagens são cifradas no navegador antes de ir pro servidor** (Web Crypto API, AES-256-GCM). O Firestore só armazena texto cifrado.
@@ -13,6 +13,9 @@ Chat em tempo real com conversas individuais, grupos e mensagens criptografadas.
 - Instalável como app (PWA) — funciona com ícone na tela inicial e abre em janela própria.
 - Cor do tema e modo claro/escuro/sistema são configuráveis pelo ícone de engrenagem.
 - **Figurinhas**: envie uma imagem do computador (botão 🖼️ ao lado do campo de mensagem) e ela vira uma figurinha reutilizável. A coleção fica guardada no próprio aparelho (IndexedDB), então continua lá depois de fechar e abrir o app; quem entra com e-mail/Google também tem uma cópia no Firestore (uma figurinha por documento) pra usar a mesma coleção em qualquer aparelho. Fundo transparente preservado (WebP, ou PNG se o navegador não suportar).
+- **Cartão de perfil**: toque na sua foto (barra lateral) ou no nome de alguém na lista de participantes pra abrir o cartão — capa colorida, foto, apelido e os números da pessoa (conversas e grupos que vocês têm juntos, e quantos contatos ela tem). No cartão dos outros tem o botão **Adicionar aos contatos** e o atalho pra abrir a conversa; no seu, a lista dos seus contatos e o atalho pra editar o perfil.
+- **Fotos**: botão 📷 ao lado do campo de mensagem (dá pra escolher várias da galeria de uma vez) ou colar uma imagem (Ctrl+V) com a conversa aberta. A foto é reduzida no navegador (até 1280px, JPEG) e cifrada como as mensagens. Toque na foto pra ver em tela cheia.
+- **Contatos**: a lista fica em `users/{uid}.contacts` no Firestore, então acompanha você em qualquer aparelho onde entrar com a mesma conta.
 - **Digitando**: quando alguém está escrevendo, aparecem três pontinhos no canto inferior esquerdo da conversa. Em grupo vem junto a foto e o nome de quem está digitando.
 - **GIFs**: busca de GIFs da internet direto no mesmo painel (aba "GIFs"), usando a API gratuita do GIPHY — exige configurar uma chave própria em `gif-config.js` (veja abaixo).
 
@@ -71,6 +74,17 @@ Não há build — é só HTML, CSS e JS puro (o Firebase é carregado via CDN c
 6. Em Firestore Database → Regras, cole o conteúdo do arquivo `firestore.rules` deste projeto e publique.
 
 > Se o projeto já estava no ar antes da v2, publique as regras de novo: elas ganharam a coleção `stickers/{uid}/items`, usada pra sincronizar as figurinhas entre aparelhos. Sem isso as figurinhas continuam funcionando, só ficam guardadas em cada aparelho.
+
+## Avatares padrão (perfil de admin)
+
+Quem é admin pode trocar as fotos que aparecem por padrão na criação do perfil direto pelo app, sem mexer no código. Enquanto nenhuma for enviada, valem os dois gatinhos que vêm junto (`icons/avatar-cat-1.png` e `icons/avatar-cat-2.png`).
+
+1. Publique as regras deste projeto (`firestore.rules`) — elas trazem a coleção `admins` e os ajustes em `settings`.
+2. Abra o app, clique na engrenagem e copie o seu ID, que fica no fim do painel em "Seu ID".
+3. No Console do Firebase, em Firestore Database, crie a coleção `admins` e dentro dela um documento com esse ID (pode ficar vazio).
+4. Recarregue o app: o painel de aparência passa a mostrar a seção de avatares padrão, onde dá pra adicionar e remover fotos.
+
+As imagens ficam em `settings/avatars/items`, uma por documento e reduzidas pra 256px, e aparecem na hora pra quem for criar o perfil. Só quem está em `admins` consegue escrever ali; as outras pessoas apenas leem.
 
 ## Configurar a busca de GIFs (opcional)
 

@@ -16,7 +16,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,600;0,9..144,700;1,9..144,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=5" />
+<link rel="stylesheet" href="style.css?v=8" />
 </head>
 <body>
 
@@ -53,8 +53,19 @@
       <span>Notificação do navegador</span>
     </label>
 
+    <div id="admin-avatars" class="admin-avatars hidden">
+      <p class="settings-title">Avatares padrão (admin)</p>
+      <div id="admin-avatar-grid" class="admin-avatar-grid">
+        <button id="btn-admin-avatar-add" class="admin-avatar-add" type="button" title="Adicionar avatar padrão">+</button>
+      </div>
+      <input id="admin-avatar-file" type="file" accept="image/*" class="hidden" />
+      <p class="muted small">Essas imagens aparecem pra todo mundo na hora de criar o perfil.</p>
+    </div>
+
     <button id="btn-link-google" class="btn btn-secondary settings-link-google hidden" type="button">Vincular conta Google (não perder mensagens)</button>
     <button id="btn-logout" class="btn-link-small settings-logout hidden" type="button">Sair da conta</button>
+
+    <button id="btn-copy-uid" class="settings-uid" type="button" title="Copiar meu ID">Seu ID: <span id="my-uid">—</span></button>
   </div>
 
   <div id="toast-container" class="toast-container"></div>
@@ -107,10 +118,17 @@
         </header>
 
         <div class="card">
-          <p class="card-title">Escolha um avatar</p>
-          <div id="avatar-grid" class="avatar-grid">
-            <button id="btn-avatar-upload" type="button" class="avatar-option avatar-upload-tile" title="Enviar uma foto do computador"><span>+</span></button>
+          <p class="card-title">Sua foto</p>
+          <p class="muted">Todo mundo começa com o gatinho do bapo. Se quiser, envie uma foto do seu aparelho.</p>
+
+          <div class="avatar-setup">
+            <img id="avatar-preview" class="avatar-preview" alt="" />
+            <div id="avatar-grid" class="avatar-grid avatar-grid-inline">
+              <button id="btn-avatar-upload" type="button" class="avatar-option avatar-upload-tile" title="Enviar uma foto do aparelho"><span>+</span></button>
+            </div>
           </div>
+
+          <button id="btn-upload-photo" class="btn btn-secondary btn-upload-photo" type="button">Enviar foto do aparelho</button>
           <input id="avatar-file-input" type="file" accept="image/*" class="hidden" />
 
           <label for="profile-name" class="small-label profile-name-label">Seu nome</label>
@@ -305,6 +323,8 @@
 
             <form id="message-form" class="message-form" autocomplete="off">
               <button id="btn-attach" type="button" class="btn-icon attach-btn" title="Figurinhas e GIFs" aria-label="Figurinhas e GIFs">🖼️</button>
+              <button id="btn-photo" type="button" class="btn-icon attach-btn" title="Enviar foto" aria-label="Enviar foto" disabled>📷</button>
+              <input id="photo-file-input" type="file" accept="image/*" multiple class="hidden" />
               <div class="input-pill">
                 <span class="lock-icon" title="Mensagens protegidas por criptografia">🔒</span>
                 <span id="ephemeral-icon" class="lock-icon hidden" title="Mensagens temporárias ativadas: somem depois de 30 minutos">⏱️</span>
@@ -324,6 +344,69 @@
   </main>
 
   <p id="app-error" class="error hidden" role="alert"></p>
+
+  <div id="photo-viewer" class="photo-viewer hidden" role="dialog" aria-modal="true" aria-label="Foto">
+    <button id="btn-close-photo-viewer" type="button" class="photo-viewer-close" aria-label="Fechar">✕</button>
+    <img id="photo-viewer-img" alt="Foto" />
+  </div>
+
+  <!-- Modal: cartão de perfil (foto, apelido, números e contatos) -->
+  <div id="profile-card-modal" class="modal-overlay hidden">
+    <div class="modal profile-card">
+      <div class="profile-card-cover"></div>
+
+      <div class="profile-card-avatar-wrap">
+        <img id="profile-card-avatar" class="profile-card-avatar" alt="" />
+      </div>
+
+      <div class="profile-card-head">
+        <div class="profile-card-names">
+          <p id="profile-card-name" class="profile-card-name"></p>
+          <p id="profile-card-handle" class="muted small"></p>
+        </div>
+        <button id="btn-profile-card-action" class="btn btn-pill-dark" type="button">Adicionar</button>
+      </div>
+
+      <div class="profile-card-stats">
+        <button id="stat-chats" class="profile-stat" type="button">
+          <span class="profile-stat-value">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a7.5 7.5 0 0 1-7.5 7.5H8l-4.5 3v-5.2A7.5 7.5 0 0 1 10.5 4h3a7.5 7.5 0 0 1 7.5 7.5Z" /></svg>
+            <strong id="stat-chats-value">0</strong>
+          </span>
+          <span class="profile-stat-label" id="stat-chats-label">Conversas</span>
+        </button>
+        <button id="stat-groups" class="profile-stat" type="button">
+          <span class="profile-stat-value">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="3.2" /><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5" /><path d="M16 6.2a3.2 3.2 0 0 1 0 5.6M17.5 14.4c2 .7 3 2.4 3 4.6" /></svg>
+            <strong id="stat-groups-value">0</strong>
+          </span>
+          <span class="profile-stat-label" id="stat-groups-label">Grupos</span>
+        </button>
+        <button id="stat-contacts" class="profile-stat" type="button">
+          <span class="profile-stat-value">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></svg>
+            <strong id="stat-contacts-value">0</strong>
+          </span>
+          <span class="profile-stat-label">Contatos</span>
+        </button>
+      </div>
+
+      <div id="profile-card-contacts" class="profile-card-contacts hidden">
+        <p class="small-label">Meus contatos</p>
+        <div id="contacts-list" class="participants-list"></div>
+      </div>
+
+      <button id="btn-profile-card-cta" class="btn profile-card-cta" type="button">
+        <span class="cta-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M5 12h13M13 7l5 5-5 5" /></svg>
+        </span>
+        <span id="profile-card-cta-text">Enviar mensagem</span>
+      </button>
+
+      <p id="profile-card-error" class="error hidden" role="alert"></p>
+      <button id="btn-close-profile-card" class="btn-link" type="button">Fechar</button>
+    </div>
+  </div>
 
   <!-- Modal: informações da conversa (foto, nome, convite, participantes) -->
   <div id="participants-modal" class="modal-overlay hidden">
@@ -402,6 +485,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=5"></script>
+  <script type="module" src="app.js?v=8"></script>
 </body>
 </html>

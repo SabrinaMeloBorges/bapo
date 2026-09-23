@@ -3,3 +3,4 @@ firestore-debug.log
 ui-debug.log
 node_modules/
 .claude/
+CLAUDE.local.md
