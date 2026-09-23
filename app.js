@@ -201,13 +201,13 @@ function toSmallestImageDataUrl(canvas) {
 const PHOTO_MAX_SIZE = 1280;
 const PHOTO_MAX_CHARS = 480 * 1024;
 
-function resizePhotoFile(file) {
+function resizePhotoFile(file, maxSize = PHOTO_MAX_SIZE, maxChars = PHOTO_MAX_CHARS) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
-      let maxSide = PHOTO_MAX_SIZE;
+      let maxSide = maxSize;
       while (maxSide >= 320) {
         const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
         const w = Math.max(1, Math.round(img.width * scale));
@@ -221,7 +221,7 @@ function resizePhotoFile(file) {
         ctx.drawImage(img, 0, 0, w, h);
         for (const quality of [0.82, 0.7, 0.58, 0.46]) {
           const dataUrl = canvas.toDataURL("image/jpeg", quality);
-          if (dataUrl.length <= PHOTO_MAX_CHARS) {
+          if (dataUrl.length <= maxChars) {
             resolve(dataUrl);
             return;
           }
@@ -505,6 +505,23 @@ const statContacts = el("stat-contacts");
 const statContactsValue = el("stat-contacts-value");
 const profileCardContacts = el("profile-card-contacts");
 const contactsList = el("contacts-list");
+const profileCardCover = el("profile-card-cover");
+
+const coverEditor = el("cover-editor");
+const coverPreview = el("cover-preview");
+const coverTypeToggle = el("cover-type");
+const coverColorFields = el("cover-color-fields");
+const coverPresets = el("cover-presets");
+const coverColor1 = el("cover-color-1");
+const coverColor1Label = el("cover-color-1-label");
+const coverColor2 = el("cover-color-2");
+const coverColor2Wrap = el("cover-color-2-wrap");
+const coverAngle = el("cover-angle");
+const coverAngleWrap = el("cover-angle-wrap");
+const coverImageFields = el("cover-image-fields");
+const btnCoverUpload = el("btn-cover-upload");
+const coverFileInput = el("cover-file-input");
+const coverError = el("cover-error");
 
 const modalOverlay = el("new-chat-modal");
 const modalTabs = el("modal-tabs");
@@ -1203,8 +1220,293 @@ function updateProfileChip() {
   chipName.textContent = myProfile.name;
 }
 
+const COVER_MAX_SIZE = 1200;
+const COVER_MAX_CHARS = 400 * 1024;
+const COVER_GIF_MAX_BYTES = 600 * 1024;
+const COVER_PRESETS = [
+  { from: "#6366f1", to: "#ec4899", angle: 135 },
+  { from: "#f97316", to: "#facc15", angle: 135 },
+  { from: "#0ea5e9", to: "#22c55e", angle: 135 },
+  { from: "#1e293b", to: "#7c3aed", angle: 180 },
+  { from: "#f43f5e", to: "#8b5cf6", angle: 90 },
+  { from: "#14b8a6", to: "#1e3a8a", angle: 45 },
+];
+
+let editingCover = null;
+let coverDirty = false;
+const coverCache = new Map();
+
+function coverBackground(cover) {
+  if (!cover) return "";
+  if (cover.type === "color") return cover.color;
+  if (cover.type === "gradient") return `linear-gradient(${cover.angle || 135}deg, ${cover.from}, ${cover.to})`;
+  if (cover.type === "image" && cover.src) return `center / cover no-repeat url("${cover.src}")`;
+  return "";
+}
+
+function applyCover(target, cover) {
+  target.style.background = coverBackground(cover);
+}
+
+async function fetchCover(uid, { fresh = false } = {}) {
+  if (!fresh && coverCache.has(uid)) return coverCache.get(uid);
+  const data = await fetchUserProfile(uid, { fresh });
+  const cover = (data && data.cover) || null;
+  coverCache.set(uid, cover);
+  return cover;
+}
+
+async function saveCover(cover) {
+  await setDoc(doc(db, "users", myUid), { cover: cover || null, updatedAt: Date.now() }, { merge: true });
+  coverCache.set(myUid, cover || null);
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
+    reader.readAsDataURL(file);
+  });
+}
+
+const GIF_BASE_MAX_SIDE = 480;
+const GIF_MAX_FRAMES = 150;
+
+const nextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+async function decodeGifFrames(file) {
+  const { parseGIF, decompressFrames } = await import("https://cdn.jsdelivr.net/npm/gifuct-js@2.1.2/+esm");
+  const gif = parseGIF(await file.arrayBuffer());
+  const raw = decompressFrames(gif, true);
+  if (!raw.length) throw new Error("Não foi possível ler esse GIF.");
+
+  const width = gif.lsd.width;
+  const height = gif.lsd.height;
+  const scale = Math.min(1, GIF_BASE_MAX_SIDE / Math.max(width, height));
+  const baseW = Math.max(1, Math.round(width * scale));
+  const baseH = Math.max(1, Math.round(height * scale));
+  const skip = Math.max(1, Math.ceil(raw.length / GIF_MAX_FRAMES));
+
+  const full = document.createElement("canvas");
+  full.width = width;
+  full.height = height;
+  const fullCtx = full.getContext("2d", { willReadFrequently: true });
+  const patchCanvas = document.createElement("canvas");
+  const patchCtx = patchCanvas.getContext("2d");
+  const base = document.createElement("canvas");
+  base.width = baseW;
+  base.height = baseH;
+  const baseCtx = base.getContext("2d", { willReadFrequently: true });
+
+  const frames = [];
+  let prev = null;
+  let restore = null;
+  let pendingDelay = 0;
+
+  for (let i = 0; i < raw.length; i++) {
+    const frame = raw[i];
+    if (prev) {
+      if (prev.disposalType === 2) fullCtx.clearRect(prev.dims.left, prev.dims.top, prev.dims.width, prev.dims.height);
+      else if (prev.disposalType === 3 && restore) fullCtx.putImageData(restore, 0, 0);
+    }
+    restore = frame.disposalType === 3 ? fullCtx.getImageData(0, 0, width, height) : null;
+
+    const { width: pw, height: ph, left, top } = frame.dims;
+    patchCanvas.width = pw;
+    patchCanvas.height = ph;
+    patchCtx.putImageData(new ImageData(new Uint8ClampedArray(frame.patch), pw, ph), 0, 0);
+    fullCtx.drawImage(patchCanvas, left, top);
+    prev = frame;
+
+    pendingDelay += frame.delay || 100;
+    if (i % skip !== skip - 1 && i !== raw.length - 1) continue;
+
+    baseCtx.fillStyle = "#1f1f1f";
+    baseCtx.fillRect(0, 0, baseW, baseH);
+    baseCtx.drawImage(full, 0, 0, baseW, baseH);
+    frames.push({ canvas: cloneCanvas(base), delay: pendingDelay });
+    pendingDelay = 0;
+    if (i % 20 === 0) await nextTick();
+  }
+
+  return { frames, width: baseW, height: baseH };
+}
+
+function cloneCanvas(source) {
+  const copy = document.createElement("canvas");
+  copy.width = source.width;
+  copy.height = source.height;
+  copy.getContext("2d").drawImage(source, 0, 0);
+  return copy;
+}
+
+async function encodeGif(frames, srcW, srcH, maxSide, step, colors) {
+  const { GIFEncoder, quantize, applyPalette } = await import("https://cdn.jsdelivr.net/npm/gifenc@1.0.3/+esm");
+  const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+  const w = Math.max(1, Math.round(srcW * scale));
+  const h = Math.max(1, Math.round(srcH * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const encoder = GIFEncoder();
+
+  for (let i = 0; i < frames.length; i += step) {
+    let delay = 0;
+    for (let j = i; j < Math.min(i + step, frames.length); j++) delay += frames[j].delay;
+    ctx.drawImage(frames[i].canvas, 0, 0, w, h);
+    const { data } = ctx.getImageData(0, 0, w, h);
+    const palette = quantize(data, colors, { format: "rgb444" });
+    const index = applyPalette(data, palette, "rgb444");
+    encoder.writeFrame(index, w, h, { palette, delay, repeat: 0 });
+    if (i % 10 === 0) await nextTick();
+  }
+
+  encoder.finish();
+  return encoder.bytes();
+}
+
+async function compressGif(file, maxBytes) {
+  const { frames, width, height } = await decodeGifFrames(file);
+  const ratio = maxBytes / file.size;
+  let side = Math.min(Math.max(width, height), Math.round(Math.max(width, height) * Math.sqrt(ratio) * 1.3));
+  let step = 1;
+  let colors = 256;
+
+  for (let attempt = 0; attempt < 10 && side >= 64; attempt++) {
+    const bytes = await encodeGif(frames, width, height, side, step, colors);
+    if (bytes.length <= maxBytes) return new Blob([bytes], { type: "image/gif" });
+    const over = bytes.length / maxBytes;
+    side = Math.round(side * Math.min(0.85, Math.sqrt(1 / over) * 0.95));
+    if (attempt >= 1 && frames.length / step > 12) step += 1;
+    if (attempt >= 3) colors = Math.max(32, colors / 2);
+  }
+  throw new Error("Não foi possível deixar esse GIF com menos de 600 KB.");
+}
+
+function showCoverError(msg) {
+  coverError.textContent = msg;
+  coverError.classList.toggle("hidden", !msg);
+}
+
+function renderCoverEditor() {
+  const type = editingCover ? editingCover.type : "default";
+  [...coverTypeToggle.children].forEach((b) => b.classList.toggle("active", b.dataset.coverType === type));
+  const isColor = type === "color" || type === "gradient";
+  coverColorFields.classList.toggle("hidden", !isColor);
+  coverImageFields.classList.toggle("hidden", type !== "image");
+  coverPresets.classList.toggle("hidden", type !== "gradient");
+  coverColor2Wrap.classList.toggle("hidden", type !== "gradient");
+  coverAngleWrap.classList.toggle("hidden", type !== "gradient");
+  coverColor1Label.textContent = type === "gradient" ? "De" : "Cor";
+  if (type === "color") coverColor1.value = editingCover.color;
+  if (type === "gradient") {
+    coverColor1.value = editingCover.from;
+    coverColor2.value = editingCover.to;
+    coverAngle.value = String(editingCover.angle || 135);
+  }
+  applyCover(coverPreview, editingCover);
+}
+
+function setEditingCover(cover) {
+  editingCover = cover;
+  coverDirty = true;
+  showCoverError("");
+  renderCoverEditor();
+}
+
+function buildCoverPresets() {
+  coverPresets.innerHTML = "";
+  COVER_PRESETS.forEach((preset) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cover-preset";
+    btn.setAttribute("aria-label", "Degradê pronto");
+    btn.style.background = coverBackground({ type: "gradient", ...preset });
+    btn.addEventListener("click", () => setEditingCover({ type: "gradient", ...preset }));
+    coverPresets.appendChild(btn);
+  });
+}
+
+buildCoverPresets();
+
+coverTypeToggle.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-cover-type]");
+  if (!btn) return;
+  const type = btn.dataset.coverType;
+  const current = editingCover ? editingCover.type : "default";
+  if (type === current) return;
+  if (type === "default") setEditingCover(null);
+  else if (type === "color") setEditingCover({ type: "color", color: coverColor1.value });
+  else if (type === "gradient") setEditingCover({ type: "gradient", from: coverColor1.value, to: coverColor2.value, angle: Number(coverAngle.value) });
+  else {
+    editingCover = { type: "image", src: "" };
+    renderCoverEditor();
+    coverFileInput.click();
+  }
+});
+
+function onCoverColorInput() {
+  if (!editingCover) return;
+  if (editingCover.type === "color") setEditingCover({ type: "color", color: coverColor1.value });
+  else if (editingCover.type === "gradient") setEditingCover({ type: "gradient", from: coverColor1.value, to: coverColor2.value, angle: Number(coverAngle.value) });
+}
+
+coverColor1.addEventListener("input", onCoverColorInput);
+coverColor2.addEventListener("input", onCoverColorInput);
+coverAngle.addEventListener("change", onCoverColorInput);
+
+btnCoverUpload.addEventListener("click", () => coverFileInput.click());
+
+coverFileInput.addEventListener("change", async () => {
+  const file = coverFileInput.files && coverFileInput.files[0];
+  coverFileInput.value = "";
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    showCoverError("Escolha um arquivo de imagem ou GIF.");
+    return;
+  }
+  try {
+    let src;
+    if (file.type === "image/gif") {
+      if (file.size <= COVER_GIF_MAX_BYTES) {
+        src = await readFileAsDataUrl(file);
+      } else {
+        btnCoverUpload.disabled = true;
+        btnCoverUpload.textContent = "Convertendo GIF…";
+        try {
+          src = await readFileAsDataUrl(await compressGif(file, COVER_GIF_MAX_BYTES));
+        } finally {
+          btnCoverUpload.disabled = false;
+          btnCoverUpload.textContent = "Enviar imagem ou GIF do aparelho";
+        }
+      }
+    } else {
+      src = await resizePhotoFile(file, COVER_MAX_SIZE, COVER_MAX_CHARS);
+    }
+    setEditingCover({ type: "image", src });
+  } catch (err) {
+    showCoverError(err.message);
+  }
+});
+
+async function openCoverEditor() {
+  editingCover = null;
+  coverDirty = false;
+  showCoverError("");
+  coverEditor.classList.remove("hidden");
+  renderCoverEditor();
+  const cover = await fetchCover(myUid, { fresh: true });
+  if (coverDirty) return;
+  editingCover = cover;
+  renderCoverEditor();
+}
+
 function showProfileScreen(prefill) {
   buildAvatarGrid();
+  if (prefill && myUid) openCoverEditor();
+  else coverEditor.classList.add("hidden");
   if (prefill) {
     profileNameInput.value = prefill.name;
     selectedAvatarSeed = prefill.avatar;
@@ -1228,6 +1530,21 @@ btnProfileContinue.addEventListener("click", async () => {
   btnProfileContinue.disabled = true;
   const profile = { name, avatar: selectedAvatarSeed };
   const isEdit = !!myProfile;
+  if (isEdit && coverDirty) {
+    if (editingCover && editingCover.type === "image" && !editingCover.src) {
+      showCoverError("Escolha uma imagem ou GIF pra capa, ou outro tipo de capa.");
+      btnProfileContinue.disabled = false;
+      return;
+    }
+    try {
+      await saveCover(editingCover);
+      coverDirty = false;
+    } catch (err) {
+      showCoverError("Não foi possível salvar a capa: " + err.message);
+      btnProfileContinue.disabled = false;
+      return;
+    }
+  }
   await saveProfile(profile);
   updateProfileChip();
   if (isEdit) {
@@ -3239,11 +3556,15 @@ async function openProfileCard(uid, fallbackProfile) {
   statContactsValue.textContent = isMe ? String(myContacts.length) : "—";
 
   updateProfileCardAction();
+  applyCover(profileCardCover, coverCache.get(uid) || null);
   profileCardModal.classList.remove("hidden");
+
 
   // o documento público refina nome/foto e traz quantos contatos a pessoa tem
   const data = await fetchUserProfile(uid, { fresh: true });
   if (profileCardUid !== uid) return;
+  coverCache.set(uid, (data && data.cover) || null);
+  applyCover(profileCardCover, coverCache.get(uid));
   if (data) {
     if (data.name) profileCardName.textContent = data.name;
     if (data.avatar) profileCardAvatar.src = resolveAvatarSrc(data.avatar);
